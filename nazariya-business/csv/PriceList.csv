@@ -1,0 +1,9 @@
+Product,Unit,Price ₹ (ex-GST),Direct cost ₹,Payment fee ₹,Sales commission ₹,Contribution ₹,Margin %,Price incl. 18% GST ₹,₹ per sq ft (2BHK),Notes
+"DIY home tour (self-capture in app, ≤8 rooms, floor plan, embed, 12 months)",per home / year,999,2.21,19.98,0,977,0.98,1179,1.11,"Brokers, owners, PG/co-living operators"
+Extra room on a DIY tour,per room,149,0.08,2.98,0,146,0.98,176,,
+"Done-for-you home tour (we shoot, up to 3BHK)",per home,4999,681,99.98,500,3718,0.74,5899,5.55,"Fast cash: brokers, builders' resale, rentals"
+Done-for-you large home / villa (≤15 rooms),per home,9999,1120,200,1000,7680,0.77,11799,,Half-day shoot
+"3D walkthrough add-on (true 3D, GPU)",per home,2999,179,59.98,0,2760,0.92,3539,,Only after GPU pipeline is validated
+"Developer project package (≤4 unit types + amenities, white label, leads, 12 months)",per project / year,49999,21514,1000,5000,22485,0.45,58999,,Sample flats + clubhouse; replaces site visits
+"Hotel / resort package (≤10 room categories + lobby, 12 months)",per property / year,24999,6163,500,2500,15836,0.63,29499,,OTA + website embed
+"Hosting renewal, any tour",per tour / year,499,1.80,9.98,0,487,0.98,589,,Year 2 onwards

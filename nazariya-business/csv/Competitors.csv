@@ -1,0 +1,12 @@
+Competitor,Plan / unit,US$ / month (low),US$ / month (high),₹ / month (low),₹ / month (high),What you get,Source,Confidence
+TeliportMe,Essential,19,25,1672,2200,"Unlimited tours, 1 user",https://teliportme.com/pricing (fetched 2026-10-17),Reported (two price sets shown; likely annual vs monthly)
+TeliportMe,Business,29,35,2552,3080,"Unlimited tours, 3 users, 1 custom domain",https://teliportme.com/pricing,Reported
+TeliportMe,Unlimited,83,99,7304,8712,"Unlimited users, 5 custom domains",https://teliportme.com/pricing,Reported
+Kuula,Pro,20,20,1760,1760,"Unlimited uploads, tour editor",https://www.capterra.com/p/179213/Kuula/pricing/,Reported (third-party)
+Kuula,Business,36,48,3168,4224,"Analytics, password tours, custom domain",Capterra / TrustRadius (conflict),"Reported (third-party, conflicting)"
+Matterport,Starter,12,14,1056,1232,5-20 active spaces,https://travvir.com/blog/en/matterport-pricing-explained,Reported (third-party); Matterport plans page shows tiers only
+Matterport,Professional,55,69,4840,6072,20-150 active spaces,Third-party listings (conflict),Reported; possible Oct-2026 repricing unverified
+Matterport,Business,269,355,23672,31240,100-300 active spaces,Third-party listings (conflict),Reported
+Nucleus4D,Per listing,,,,,US$0.03 per sq ft per listing per year + dedicated capture rig,Podcast summary (research ledger E11),Low confidence
+Indian 360 tour agency,Per tour,,,,,"₹1,00,000 per tour (one Ahmedabad vendor listing)",https://m.indiamart.com/impcat/360-degree-virtual-tours.html,"Single asking price, not a market rate"
+US 3D tour service,Per small home,,,,,US$100-500,https://www.styldod.com/blog/how-much-do-3d-virtual-tours-cost,Reported

@@ -1,0 +1,57 @@
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Environment variables & secrets
+.env
+.env*.local
+.env.local
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js build output
+.next/
+out/
+
+# Local database & object storage
+.pgdata/
+storage/
+assets/source/
+
+# Logs
+*.log
+*.mark
+.next-*.log*
+.worker.log*
+
+# Testing & Reports
+test-results/
+playwright-report/
+.shots/
+coverage/
+
+# TypeScript build info
+*.tsbuildinfo
+next-env.d.ts
+
+# Local SSL certificates
+.certs/
+
+# Editor & IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local agent configs & legacy artifacts
+.claude/
+.agents/
+.oxlintrc.json
+.oxfmtrc.json
+.release-please-manifest.json
+.jscpd.json
+.gitmodules
+.husky/
+.github/

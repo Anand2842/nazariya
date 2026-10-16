@@ -1,0 +1,61 @@
+{
+  "name": "nazariya",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nazariya Studio: turn property images into interactive 3D/360\u00b0 tours and embed them in any website or app",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "typecheck": "tsc --noEmit",
+    "db:init": "bash scripts/db.sh init",
+    "db:start": "bash scripts/db.sh start",
+    "db:stop": "bash scripts/db.sh stop",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node --env-file=.env.local --import tsx scripts/migrate.ts",
+    "db:reset": "node --env-file=.env.local --import tsx scripts/migrate.ts --reset",
+    "assets:fetch": "node --env-file=.env.local --import tsx scripts/fetch-assets.ts",
+    "seed": "node --env-file=.env.local --import tsx scripts/seed.ts",
+    "worker": "node --env-file=.env.local --import tsx scripts/worker.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "db:migrate:test": "node --env-file=.env.local --import tsx scripts/migrate.ts --test --reset",
+    "setup": "npm run db:init && npm run db:start && npm run db:reset && npm run assets:fetch && npm run seed",
+    "dev:https": "bash scripts/dev-https.sh",
+    "storage:gc": "node --env-file=.env.local --import tsx scripts/gc-storage.ts"
+  },
+  "dependencies": {
+    "@photo-sphere-viewer/core": "5.14.0",
+    "@photo-sphere-viewer/markers-plugin": "5.14.0",
+    "@sparkjsdev/spark": "0.1.10",
+    "drizzle-orm": "0.44.5",
+    "next": "15.5.4",
+    "postgres": "3.4.7",
+    "qrcode": "1.5.4",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "sharp": "0.34.3",
+    "three": "0.180.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.0",
+    "@tailwindcss/postcss": "4.1.13",
+    "@types/node": "24.5.2",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@types/three": "0.180.0",
+    "drizzle-kit": "0.31.4",
+    "tailwindcss": "4.1.13",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

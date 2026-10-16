@@ -1,0 +1,26 @@
+host	path (query strings and tokens removed)	type	status	count
+blob	<blob>	image	200	3
+blob	<blob>	script	200	4
+d1be7nrxaqyvid.cloudfront.net	/point_clouds/Nucleus/<uuid>/<uuid>/torrey-7006-cooper/splash_screen_media/<uuid>/listivo_loading_screen.mp4	media	403	1
+data.splatter.app	/f3b-8mm/<chunk-n>	fetch	200	27
+data.splatter.app	/f3b-8mm/meta	fetch	200	1
+files.nucleus4d.com	/file/point_clouds%2FNucleus%2F977de998-7883-44d3-ac71-5b6c29243685%2Fb3391029-d8d7-4a24-bf39-546c62dbb311%2Ftorrey-7006-cooper%2Fcollision%2Fec9549f7-0f56-4a5c-b720-dea89d711254%2Ftorrey_7006_copper_col_01.glb	fetch	200	1
+portal.nucleus4d.com	/_next/image	image	200	1
+portal.nucleus4d.com	/_next/static/chunks/<chunk>.js	script	200	32
+portal.nucleus4d.com	/_next/static/css/<sheet>.css	stylesheet	200	4
+portal.nucleus4d.com	/_next/static/media/<font>.woff2	font	200	6
+portal.nucleus4d.com	/api/csp-report	other	204	5
+portal.nucleus4d.com	/api/real-estate-property	fetch	200	1
+portal.nucleus4d.com	/api/real-estate-property-zone	fetch	200	1
+portal.nucleus4d.com	/api/service-metadata	fetch	200	1
+portal.nucleus4d.com	/api/token	fetch	200	1
+portal.nucleus4d.com	/api/user-usage-data	fetch	200	1
+portal.nucleus4d.com	/api/viewer-asset	fetch	200	3
+portal.nucleus4d.com	/listivo/torrey-7006-cooper	document	200	1
+portal.nucleus4d.com	/listivo/torrey-7006-cooper	fetch	200	1
+portal.nucleus4d.com	/sw.js	script	200	1
+us-assets.i.posthog.com	/array/phc_yyswbsyvriaPrz24uoTwr8t3H39PsrT79EN6A89wE2PY/config.js	script	200	1
+us-assets.i.posthog.com	/static/surveys.js	script	200	1
+us.i.posthog.com	/flags/	fetch	200	1
+www.google-analytics.com	/g/collect	fetch	204	5
+www.googletagmanager.com	/gtag/js	script	200	1
