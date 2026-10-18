@@ -87,11 +87,12 @@ export default function SplatView({
         const tf = zone.splatTransform ?? { flip: false, yawDeg: 0, scale: 1 };
         if (tf.flip) mesh.rotateX(Math.PI);
         if (tf.yawDeg) mesh.rotateY((tf.yawDeg * Math.PI) / 180);
+        // Reconstructed scans: first made upright (align), then the editor's flip/rotate.
+        if (tf.align) mesh.quaternion.multiply(new THREE.Quaternion(...tf.align));
         if (tf.scale && tf.scale !== 1) mesh.scale.setScalar(tf.scale);
         // Whole-home scans: start the camera at a chosen point of the scene (e.g. where the walkthrough began).
         if (tf.offset) {
-          const o = new THREE.Vector3(...tf.offset).multiplyScalar(tf.scale || 1);
-          if (tf.yawDeg) o.applyAxisAngle(new THREE.Vector3(0, 1, 0), (tf.yawDeg * Math.PI) / 180);
+          const o = new THREE.Vector3(...tf.offset).multiplyScalar(tf.scale || 1).applyQuaternion(mesh.quaternion);
           mesh.position.copy(o.negate());
         }
         if (disposed) {

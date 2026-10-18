@@ -91,7 +91,7 @@ export const arRoomMetaSchema = z.object({
   // Camera positions walked since the previous room of this session (AR world), for door placement.
   path: z.array(z.tuple([z.number(), z.number(), z.number()])).max(5000).default([]),
   depth: z.boolean().default(false),
-  diag: z.record(z.string(), z.union([z.number(), z.string(), z.boolean()])).optional(),
+  diag: z.record(z.string(), z.union([z.number(), z.string(), z.boolean()])).optional().catch(undefined),
 });
 
 const MAX_POINTS_BYTES = 8 * 1024 * 1024;
@@ -170,6 +170,8 @@ interface ArCaptureMeta {
 }
 
 /** The room frame of an AR capture: capture point (mean camera position) and the heading of the first photo. */
+const MAX_TRACKING_SPREAD_M = 0.5;
+
 export function arRoomFrame(frames: { m: number[] }[]) {
   const poses = frames.map((f) => poseFromMatrix(f.m));
   const origin: Vec3 = [0, 1, 2].map((k) => poses.reduce((a, p) => a + p.position[k], 0) / poses.length) as Vec3;
@@ -215,8 +217,11 @@ export async function processArRoomCapture(assetId: string, deps: { stitch: type
   const frames = [];
   for (let i = 0; i < cap.frames.length; i++) frames.push({ image: await deps.loadRaw(await getBuffer(cap.frames[i].key), 1280), basis: basisInRoom(poses[i].basis, headingRef) });
   const t0 = Date.now();
-  // Poses from AR tracking are accurate, so the stitcher only needs a small search.
-  const r = deps.stitch(frames, { width: 4096, fovLongDeg: fovLongDeg(k), searchDeg: 2 });
+  // Someone turning on one spot keeps the phone within ~30 cm. Photo positions spread wider than this mean AR
+  // tracking drifted (plain ceilings and walls give it nothing to track), so positions and depth can't be trusted.
+  const trackingOk = drift <= MAX_TRACKING_SPREAD_M;
+  // Poses from good AR tracking are accurate, so the stitcher only needs a small search; otherwise search wider.
+  const r = deps.stitch(frames, { width: 4096, fovLongDeg: fovLongDeg(k), searchDeg: trackingOk ? 2 : 8 });
   if (r.coverage < 0.85) {
     await db.update(zones).set({ splatStatus: "failed", splatNote: null }).where(eq(zones.id, zoneId));
     return deps.reject(assetId, `Parts of the room were missed (${Math.round(r.coverage * 100)}% covered). Capture again and follow every dot.`);
@@ -225,7 +230,7 @@ export async function processArRoomCapture(assetId: string, deps: { stitch: type
   // Measure the room from depth points (room-local coordinates).
   let measured: ReturnType<typeof measureRoom> = null;
   let depthKey: string | null = null;
-  if (cap.pointsKey) {
+  if (cap.pointsKey && trackingOk) {
     const buf = await getBuffer(cap.pointsKey);
     const world = new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4));
     const local = new Float32Array(world.length);
@@ -284,11 +289,16 @@ export async function processArRoomCapture(assetId: string, deps: { stitch: type
     dims: measured ? dims : null,
     areaM2: measured ? Math.round(dims.w * dims.d * 10) / 10 : null,
     phoneDriftM: Math.round(drift * 100) / 100,
+    trackingOk,
     door,
     depthKey,
     depthW: depthKey ? 256 : null,
   };
-  const stats = { fovLongDeg: Math.round(r.fovLongDeg * 10) / 10, coverage: Math.round(r.coverage * 1000) / 1000, stitchMs: Date.now() - t0, frames: frames.length, pairDisagreementP90Deg: r.pairDisagreementP90Deg, warning: drift > 0.25 ? "The phone moved more than 25 cm during the capture, so some seams may show." : null };
+  const stats = { fovLongDeg: Math.round(r.fovLongDeg * 10) / 10, coverage: Math.round(r.coverage * 1000) / 1000, stitchMs: Date.now() - t0, frames: frames.length, pairDisagreementP90Deg: r.pairDisagreementP90Deg, warning: !trackingOk
+      ? "AR tracking drifted during this room (plain ceiling or walls?), so it was not measured. The 360° is fine; for sizes, capture again with more light or textured areas in view."
+      : drift > 0.25
+        ? "The phone moved more than 25 cm during the capture, so some seams may show."
+        : null };
   await db.update(mediaAssets).set({ sha256: sha256(jpeg), bytes: jpeg.byteLength, meta: { ...(a.meta as object), stitch: stats, ar, depth: depthKey ? { key: depthKey, W: 256 } : null } }).where(eq(mediaAssets.id, assetId));
   const res = await deps.processPano(assetId);
   return { ...(res as object), ar };

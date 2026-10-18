@@ -115,6 +115,83 @@ test("expired or invalid capture links are refused", async ({ page }) => {
   expect(r.status()).toBe(401);
 });
 
+test("depth mode keeps capturing when AR tracking drifts (seen on a real phone), and doesn't fake measurements", async ({ page, browser }) => {
+  test.setTimeout(300_000);
+  await openDraftSpace(page);
+  await page.getByTestId("phone-capture-create").click();
+  const url = (await page.getByTestId("phone-capture-url").textContent())!;
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const p = await phone.newPage();
+  await p.addInitScript(installFakeXR);
+  await p.goto(url);
+  await p.getByTestId("ar-start").click();
+  await expect(p.getByTestId("ar-depth-chip")).toContainText("Depth on");
+  const name = `AR Drift ${Date.now() % 100000}`;
+  await p.getByTestId("ar-new-room").fill(name);
+  await p.getByTestId("ar-add-room").click();
+  await expect(p.getByTestId("ar-room").locator("option:checked")).toHaveText(name);
+  const set = (o: { pos?: number[]; yaw: number; pitch: number; drift?: number[] }) =>
+    p.evaluate((v) => Object.assign((window as unknown as { __xr: object }).__xr, v), { ...o, yaw: (o.yaw * Math.PI) / 180, pitch: (o.pitch * Math.PI) / 180 });
+  const origin = [0, 0, 0];
+  await set({ pos: origin, yaw: 0, pitch: 0 });
+  await p.getByTestId("ar-begin-room").click();
+  const all = panoTargets();
+  let prev = "";
+  for (let n = 1; n <= 30; n++) {
+    await expect(p.getByTestId("ar-guide")).not.toHaveAttribute("data-next-target", prev);
+    prev = (await p.getByTestId("ar-guide").getAttribute("data-next-target"))!;
+    const t = all[Number(prev)];
+    // As logged on the real phone: after the first row the reported position slides away by metres (0.8 → 3 m)
+    // and once jumps, while the user stands still.
+    const k = Math.max(0, n - 12);
+    const drift = n === 20 ? [2.4, -1.1, 1.6] : [0.17 * k, -0.06 * k, -0.12 * k];
+    await set({ yaw: (t.yaw * 180) / Math.PI, pitch: (t.pitch * 180) / Math.PI, drift });
+    await expect(p.getByTestId("ar-progress")).toHaveText(`${n}/30`, { timeout: 15_000 });
+  }
+  // Tracking that keeps resetting is detected, and the standard capture is offered (without blocking this one).
+  await expect(p.getByTestId("ar-unstable")).toBeVisible();
+  await expect(p.getByTestId("ar-switch-standard")).toBeVisible();
+  await p.getByTestId("ar-finish-room").click();
+  await expect(p.getByTestId("ar-msg")).toContainText(`${name} uploaded`, { timeout: 60_000 });
+  await p.getByTestId("ar-end").click();
+  // The phone remembers it, and says so next time depth mode is offered.
+  await p.reload();
+  await expect(p.getByTestId("ar-unstable-before")).toBeVisible();
+  await phone.close();
+  // The 360° is built, but the room is not "measured" from drifted positions; the studio says why.
+  const room = page.getByTestId("studio-plan").locator(`[data-label="${name}"]`);
+  await expect(async () => {
+    await page.reload();
+    // Processed when this room is on the floor plan.
+    await expect(room).toBeVisible({ timeout: 1500 });
+  }).toPass({ timeout: 180_000, intervals: [3000] });
+  await expect(page.getByTestId("media-warning").filter({ hasText: "AR tracking drifted" }).first()).toBeVisible();
+  await expect(room).not.toContainText("measured");
+});
+
+test("depth mode: when AR tracking keeps resetting, one tap switches to the standard 360° capture", async ({ page, browser }) => {
+  await openDraftSpace(page);
+  await page.getByTestId("phone-capture-create").click();
+  const url = (await page.getByTestId("phone-capture-url").textContent())!;
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const p = await phone.newPage();
+  await p.addInitScript(installFakeXR);
+  await p.goto(url);
+  await p.getByTestId("ar-start").click();
+  await expect(p.getByTestId("ar-room")).toHaveValue(/.+/);
+  await p.getByTestId("ar-begin-room").click();
+  await expect(p.getByTestId("ar-progress")).toHaveText("1/30", { timeout: 15_000 });
+  // Five tracking resets in a few seconds (the world origin jumps by metres).
+  for (let k = 1; k <= 5; k++) {
+    await p.evaluate((d) => Object.assign((window as unknown as { __xr: object }).__xr, { drift: d }), [k * 1.3, 0, -k]);
+    await p.waitForTimeout(300);
+  }
+  await expect(p.getByTestId("ar-unstable")).toContainText("keeps resetting");
+  await p.getByTestId("ar-switch-standard").click();
+  await expect(p.getByTestId("capture-done")).toContainText("standard 360° capture");
+  await phone.close();
+});
+
 test("depth mode on an AR phone: capture two rooms, walk between them → measured floor plan with doors", async ({ page, browser }) => {
   test.setTimeout(420_000);
   await openDraftSpace(page);
@@ -132,7 +209,9 @@ test("depth mode on an AR phone: capture two rooms, walk between them → measur
   const setPose = (pos: [number, number, number], yawDeg: number, pitchDeg = 0) =>
     p.evaluate(([pp, y, pi]) => Object.assign((window as unknown as { __xr: object }).__xr, { pos: pp, yaw: (y * Math.PI) / 180, pitch: (pi * Math.PI) / 180 }), [pos, yawDeg, pitchDeg] as const);
   const all = panoTargets();
-  const captureRoom = async (name: string, type: string, origin: [number, number, number], heading: number) => {
+  // A hand-held phone never stays exactly on the spot: up to ~12 cm of lens movement must still capture.
+  const wobble = (n: number): [number, number, number] => [0.12 * Math.sin(n * 1.7), 0.06 * Math.cos(n * 2.3), 0.1 * Math.cos(n * 1.1)].map((v) => Math.max(-0.12, Math.min(0.12, v))) as [number, number, number];
+  const captureRoom = async (name: string, type: string, origin: [number, number, number], heading: number, realistic = false) => {
     await p.getByTestId("ar-new-room").fill(name);
     await p.getByLabel("Room type").selectOption(type);
     await p.getByTestId("ar-add-room").click();
@@ -141,12 +220,25 @@ test("depth mode on an AR phone: capture two rooms, walk between them → measur
     await setPose(origin, heading);
     await p.waitForTimeout(200);
     await p.getByTestId("ar-begin-room").click();
+    // Like a real phone: missing camera frames and occasional camera/depth read errors must not stall capture.
+    await p.evaluate((on) => Object.assign((window as unknown as { __xr: object }).__xr, { flaky: on }), realistic);
     let prev = "";
     for (let n = 1; n <= 30; n++) {
       await expect(p.getByTestId("ar-guide")).not.toHaveAttribute("data-next-target", prev);
       prev = (await p.getByTestId("ar-guide").getAttribute("data-next-target"))!;
       const t = all[Number(prev)];
-      await setPose(origin, heading + (t.yaw * 180) / Math.PI, (t.pitch * 180) / Math.PI);
+      const yaw = heading + (t.yaw * 180) / Math.PI, pitch = (t.pitch * 180) / Math.PI;
+      if (realistic && n === 6) {
+        // 30 cm to the left of the spot: the app says which way to go back, but still takes the photo
+        // (position is advice only; blocking on it stalled real phones whose AR position drifted).
+        const r = [Math.cos((yaw * Math.PI) / 180), 0, Math.sin((yaw * Math.PI) / 180)];
+        await setPose([origin[0] - 0.3 * r[0], origin[1], origin[2] - 0.3 * r[2]], yaw, pitch);
+        await expect(p.getByTestId("ar-drift")).toContainText("30 cm right");
+        await expect(p.getByTestId("ar-progress")).toHaveText(`${n}/30`, { timeout: 15_000 });
+        continue;
+      }
+      const w = realistic && n > 1 ? wobble(n) : [0, 0, 0];
+      await setPose([origin[0] + w[0], origin[1] + w[1], origin[2] + w[2]], yaw, pitch);
       await expect(p.getByTestId("ar-progress")).toHaveText(`${n}/30`, { timeout: 15_000 });
     }
     await p.getByTestId("ar-finish-room").click();
@@ -155,7 +247,7 @@ test("depth mode on an AR phone: capture two rooms, walk between them → measur
 
   const run = Date.now() % 100000;
   const living = `AR Living ${run}`, bedroom = `AR Bedroom ${run}`;
-  await captureRoom(living, "living", [0.4, 0, -0.3], 37);
+  await captureRoom(living, "living", [0.4, 0, -0.3], 37, true);
   // Walk through the doorway into the next room (recording keyframes on the way).
   for (let k = 0; k <= 16; k++) {
     const t = k / 16;
@@ -165,7 +257,7 @@ test("depth mode on an AR phone: capture two rooms, walk between them → measur
   }
   await captureRoom(bedroom, "bedroom", [3.3, 0, 0.2], 127);
   await p.getByTestId("ar-end").click();
-  await expect(p.getByTestId("capture-done")).toContainText("2 rooms captured in depth mode");
+  await expect(p.getByTestId("capture-done")).toContainText("2 rooms captured in depth mode", { timeout: 60_000 });
   await phone.close();
 
   // Studio: both rooms measured and placed on the floor plan, connected by doors.

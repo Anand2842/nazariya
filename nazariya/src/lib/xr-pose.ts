@@ -12,6 +12,30 @@ export function poseFromMatrix(m: ArrayLike<number>): { basis: Basis; position: 
   };
 }
 
+/**
+ * Where to move the phone to get back to `target`, in the user's own terms (metres): right/left along the
+ * screen's horizontal, forward/back along the direction the user faces, up/down. Works when the camera points up
+ * or down too (then the user's "forward" is the top edge of the phone, or its bottom edge).
+ */
+export function moveHint(position: Vec3, target: Vec3, b: Basis): { right: number; forward: number; up: number } {
+  const o: Vec3 = [target[0] - position[0], target[1] - position[1], target[2] - position[2]];
+  const flat = (v: Vec3): Vec3 => {
+    const n = Math.hypot(v[0], v[2]) || 1;
+    return [v[0] / n, 0, v[2] / n];
+  };
+  const right = flat(b.right);
+  // Facing direction: the camera's horizontal heading; tilted up it is the phone's bottom edge, tilted down its top edge.
+  const f = flat([b.forward[0] - b.forward[1] * b.up[0], 0, b.forward[2] - b.forward[1] * b.up[2]]);
+  return { right: o[0] * right[0] + o[2] * right[2], forward: o[0] * f[0] + o[2] * f[2], up: o[1] };
+}
+
+/** "9 cm left, 5 cm down" (components under 3 cm are left out). */
+export function moveHintText(h: { right: number; forward: number; up: number }): string {
+  const part = (v: number, pos: string, neg: string) => (Math.abs(v) >= 0.03 ? `${Math.round(Math.abs(v) * 100)} cm ${v > 0 ? pos : neg}` : null);
+  const parts = [part(h.right, "right", "left"), part(h.forward, "forward", "back"), part(h.up, "up", "down")].filter(Boolean);
+  return parts.length ? parts.join(", ") : "a little";
+}
+
 /** Yaw (radians, clockwise from −z) of a direction. */
 export function yawOfDir(v: Vec3): number {
   return Math.atan2(v[0], -v[2]);

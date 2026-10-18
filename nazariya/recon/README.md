@@ -25,6 +25,10 @@ imports `<outDir>/scene.ply|spz` like any uploaded scan.
 
 Running the worker directly on a GPU machine: `NAZARIYA_RECON_CMD=/path/to/recon/run.sh` (nerfstudio installed).
 
+No GPU? On an Apple-silicon Mac, `NAZARIYA_RECON_CMD=/path/to/recon/local-mac.sh` uses COLMAP (CPU) for camera
+poses and Brush (Apache-2.0, Metal GPU) for training. Setup: `brew install colmap`, download the Brush release
+for `aarch64-apple-darwin`, set `BRUSH_BIN`. Slower (tens of minutes per room) but free.
+
 ## Notes
 - Typical cost: 10–25 GPU-minutes per 2BHK. Hourly prices vary by provider. Measure with your own captures before quoting.
 - Quality depends on the capture: walk slowly, keep lights on, avoid mirrors and moving people.

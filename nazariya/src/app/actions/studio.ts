@@ -7,7 +7,7 @@ import { getCurrentUser, requireAdmin } from "@/server/session";
 import * as S from "@/server/studio";
 import { db } from "@/server/db";
 import { zones } from "@/server/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { createCaptureLink } from "@/server/capture";
 import { autoArrange, setZonePlan } from "@/server/house";
 import { act } from "./result";
@@ -88,7 +88,11 @@ export async function setScanTransformAction(spaceId: string, zoneId: string, t:
     await S.loadSpace(user, spaceId);
     const scale = Math.min(10, Math.max(0.1, Number(t.scale) || 1));
     const yawDeg = ((Number(t.yawDeg) || 0) % 360 + 360) % 360;
-    await db.update(zones).set({ splatTransform: { flip: !!t.flip, yawDeg, scale } }).where(eq(zones.id, zoneId));
+    const [z] = await db.select({ t: zones.splatTransform }).from(zones).where(and(eq(zones.id, zoneId), eq(zones.spaceId, spaceId)));
+    if (!z) throw new DomainError("Room not in this space", "not_found");
+    // Keep what the reconstruction worked out (upright alignment, start point); the editor adjusts the rest.
+    const prev = z.t as { offset?: [number, number, number]; align?: [number, number, number, number] };
+    await db.update(zones).set({ splatTransform: { flip: !!t.flip, yawDeg, scale, ...(prev.offset ? { offset: prev.offset } : {}), ...(prev.align ? { align: prev.align } : {}) } }).where(eq(zones.id, zoneId));
     touch(spaceId);
   });
 }

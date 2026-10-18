@@ -9,7 +9,11 @@ export function jsonError(e: unknown) {
     const status = e.code === "not_found" ? 404 : e.code === "forbidden" ? 403 : e.code === "conflict" ? 409 : 422;
     return NextResponse.json({ error: e.message, code: e.code, details: e.details }, { status });
   }
-  if (e instanceof ZodError) return NextResponse.json({ error: "Invalid input", details: e.issues.map((i) => `${i.path.join(".")}: ${i.message}`) }, { status: 422 });
+  if (e instanceof ZodError) {
+    const details = e.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+    console.warn(`[invalid-input] ${details.slice(0, 8).join(" | ")}`);
+    return NextResponse.json({ error: "Invalid input", details }, { status: 422 });
+  }
   console.error(e);
   return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
 }

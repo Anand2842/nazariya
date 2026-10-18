@@ -225,7 +225,12 @@ export async function runReconstruction(opts: { inputDir: string; zoneId: string
       .values({ orgId: opts.orgId, spaceId: opts.spaceId, kind: "splat", storageKey: key, mime: out.endsWith(".ply") ? "model/ply" : "model/spz", bytes: buf.byteLength, sha256: sha256(buf), originalName: out, meta: { zoneId: opts.zoneId, ...opts.source } })
       .returning();
     await processSplatImport(imp.id);
-    await db.update(zones).set({ splatSource: "reconstructed" }).where(eq(zones.id, opts.zoneId));
+    // Optional <outDir>/transform.json: upright alignment, metric scale and start point worked out by the worker.
+    const tf = await readFile(path.join(outDir, "transform.json"), "utf8").then((t) => JSON.parse(t) as { align?: number[]; scale?: number; offset?: number[]; startYaw?: number }).catch(() => null);
+    await db
+      .update(zones)
+      .set({ splatSource: "reconstructed", ...(tf?.align?.length === 4 ? { splatTransform: { flip: false, yawDeg: 0, scale: tf.scale ?? 1, align: tf.align, ...(tf.offset?.length === 3 ? { offset: tf.offset } : {}) }, ...(Number.isFinite(tf.startYaw) ? { startYaw: tf.startYaw } : {}) } : {}) })
+      .where(eq(zones.id, opts.zoneId));
     return "done";
   } catch (e) {
     await db.update(zones).set({ splatStatus: "failed", splatNote: `Reconstruction failed: ${(e as Error).message.slice(0, 160)}` }).where(eq(zones.id, opts.zoneId));

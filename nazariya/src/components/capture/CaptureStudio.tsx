@@ -6,11 +6,15 @@ import { ArCapture } from "./ArCapture";
 import { arSupported, isIos } from "./xr";
 import {
   CAMERA_ERROR_TEXT,
+  captureDebug,
+  finiteIn,
   grabFrame,
   grabSyncedFrame,
   pickRecorderMime,
+  sendCaptureDiag,
   sensorRate,
   requestOrientationPermission,
+  uploadErrorText,
   uploadForm,
   useCamera,
   useFrameQuality,
@@ -331,7 +335,7 @@ interface Captured {
 const AIM_DEG = 2.5;
 const STILL_DEG = 0.6; // max wander during the last 300 ms
 const HOLD_MS = 350;
-const MAX_ROLL_DEG = 6;
+const MAX_ROLL_DEG = 12; // each photo keeps its full orientation (roll included), so the stitcher handles tilt; this only keeps rows overlapping
 
 interface Hud {
   next: { x: number; y: number; onScreen: boolean; aimDeg: number } | null;
@@ -364,31 +368,60 @@ function PanoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId: 
   const [err, setErr] = useState<string | null>(null);
   const holdSince = useRef<number | null>(null);
   const busy = useRef(false);
-  const debug = useMemo(() => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug"), []);
+  const busySince = useRef(0);
+  const debug = useMemo(() => captureDebug(), []);
+  const sessionId = useMemo(() => Math.random().toString(36).slice(2, 10), []);
+  const lastShotAt = useRef(0);
+  const failures = useRef(0);
+  const lastFailure = useRef<string | null>(null);
+  const gate = useRef<Record<string, unknown>>({});
+  const diag = (event: string, extra: Record<string, unknown> = {}) =>
+    sendCaptureDiag({ mode: "standard", event, sessionId, spaceId, room: room.label, shots: capturedRef.current.length, busyMs: busy.current ? Math.round(performance.now() - busySince.current) : 0, failures: failures.current, lastFailure: lastFailure.current, secondsSinceShot: Math.round((performance.now() - lastShotAt.current) / 1000), ...gate.current, ...extra }, token);
 
   const doCapture = async (t: Target) => {
     const v = videoRef.current;
     if (!v || busy.current) return;
     busy.current = true;
+    busySince.current = performance.now();
     try {
-      const { blob, captureTime } = await grabSyncedFrame(v, 1600, 0.88);
+      // A camera that stops delivering frames must not leave the capture waiting forever.
+      const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("camera frame timeout")), 4000));
+      const { blob, captureTime } = await Promise.race([grabSyncedFrame(v, 1600, 0.88), timeout]);
       // Tag the photo with the reading taken closest to the moment the frame was captured.
       const i = nearestSample(samples.current, captureTime);
-      if (i < 0) return;
+      if (i < 0) throw new Error("no orientation reading");
       const entry = { target: t.id, blob, angles: { ...samples.current[i].a } };
       capturedRef.current = [...capturedRef.current, entry];
       setCaptured(capturedRef.current);
       lastYaw.current = t.yaw;
+      lastShotAt.current = performance.now();
+      if (debug) diag("shot", { target: t.id });
       setFlash(true);
       setTimeout(() => setFlash(false), 100);
       try {
         navigator.vibrate?.(30);
       } catch {}
+    } catch (e) {
+      failures.current += 1;
+      lastFailure.current = (e as Error).message;
+      diag("shot_failed", { target: t.id });
     } finally {
       holdSince.current = null;
       setTimeout(() => (busy.current = false), 400);
     }
   };
+
+  // Live diagnostics: every second in debug mode; otherwise only when no photo was taken for 8 s.
+  useEffect(() => {
+    if (!started) return;
+    lastShotAt.current = performance.now();
+    const id = setInterval(() => {
+      if (debug) diag("live");
+      else if (performance.now() - lastShotAt.current > 8000) diag("stall");
+    }, debug ? 1000 : 4000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, debug]);
 
   const start = () => {
     const s = samples.current;
@@ -440,7 +473,10 @@ function PanoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId: 
         const onScreen = !!p && p.x > 0 && p.x < cw && p.y > 0 && p.y < ch;
         next = p ? { ...p, onScreen, aimDeg: aim } : { x: 0, y: 0, onScreen: false, aimDeg: aim };
         if (!onScreen) arrow = Math.atan2(-dot(d, basis.up), dot(d, basis.right)) * R2D;
-        const ok = aim <= AIM_DEG && Math.abs(roll) <= MAX_ROLL_DEG && wander <= STILL_DEG;
+        // Roll is undefined when looking straight up or down, so it is only checked for the other rows.
+        const rollOk = nt.ring === "zenith" || nt.ring === "nadir" || Math.abs(roll) <= MAX_ROLL_DEG;
+        const ok = aim <= AIM_DEG && rollOk && wander <= STILL_DEG;
+        gate.current = { nextTarget: nt.id, ring: nt.ring, aimDeg: +aim.toFixed(2), rollDeg: +roll.toFixed(1), pitchDeg: +pitch.toFixed(1), wanderDeg: +wander.toFixed(2), blocked: aim > AIM_DEG ? "aim" : !rollOk ? "roll" : wander > STILL_DEG ? "still" : null, sensorHz: Math.round(sensorRate(buf)), frameSync: clock.current.sync, latencyMs: Math.round(clock.current.latencyMs), onScreen };
         if (ok) {
           holdSince.current ??= now;
           hold = Math.min(1, (now - holdSince.current) / HOLD_MS);
@@ -511,14 +547,18 @@ function PanoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId: 
       "meta",
       JSON.stringify({
         device: deviceLabel(),
-        diag: { sensorHz: Math.round(sensorRate(samples.current)), frameSync: c.sync, latencyMs: Math.round(c.latencyMs) },
+        diag: { sensorHz: finiteIn(sensorRate(samples.current), 0, 1000), frameSync: c.sync, latencyMs: finiteIn(c.latencyMs, 0, 2000) },
         frames: captured.map((c) => ({ ...c.angles, target: c.target })),
       }),
     );
     captured.forEach((c, i) => fd.set(`frame_${i}`, new File([c.blob], `frame_${i}.jpg`, { type: "image/jpeg" })));
     const r = await uploadForm("/api/captures/pano", fd, token, (p) => setUploading(Math.round(p * 100)));
     setUploading(null);
-    if (!r.ok) return setErr(r.data.error ?? "Upload failed");
+    if (!r.ok) {
+      diag("upload_failed", { error: uploadErrorText(r.data) });
+      return setErr(uploadErrorText(r.data));
+    }
+    if (debug) diag("uploaded");
     onFinished(`360° capture of ${room.label} uploaded (${captured.length} photos). Stitching takes about a minute; the 3D walkthrough is built right after.`);
   };
 

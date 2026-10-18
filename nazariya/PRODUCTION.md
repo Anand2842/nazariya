@@ -11,6 +11,8 @@ Everything below is **not yet done**. The app runs and is tested locally with de
 3. **OTP delivery**: replace the dev outbox with an SMS/WhatsApp provider (MSG91, Gupshup, Twilio Verify) in
    `deliverNotifications`. Then **`DEV_TOOLS` must be unset** (it echoes OTP codes).
 4. **Secrets**: strong `SESSION_SECRET`, `APP_URL=https://…` (enables secure cookies). Store them in the platform's secret manager.
+   Behind a load balancer / TLS proxy also set `INTERNAL_APP_URL` (e.g. `http://127.0.0.1:3100`): the embed
+   middleware looks up each tour's allowed domains there; without it the lookup can fail and embeds are blocked.
 5. **Processes**: run `npm start` (web, ≥2 instances behind a load balancer) and `npm run worker` (separate service; scale
    horizontally, since jobs are claimed with `FOR UPDATE SKIP LOCKED`). Health check: `GET /api/health`.
 6. **Uploads**: put upload size limits at the proxy (360° ≤ 60 MB, video ≤ 800 MB, scans ≤ 500 MB). For large videos and scans,

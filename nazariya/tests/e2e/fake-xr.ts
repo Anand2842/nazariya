@@ -12,7 +12,12 @@ export function installFakeXR() {
   const A = { x0: -1.8, x1: 1.8, z0: -2.1, z1: 2.1 };
   const B = { x0: 1.9, x1: 5.1, z0: -1.6, z1: 1.6 };
   const DOOR = { z0: -0.45, z1: 0.45, top: 0.7 };
-  const state = { pos: [0, 0, 0] as V, yaw: 0, pitch: 0 };
+  // flaky: behave like a real phone under load: some frames have no camera image, and camera/depth reads
+  // occasionally throw. A capture must survive this.
+  // drift: error added to the *reported* position only (the camera still sees the real room), like visual-inertial
+  // tracking slipping on a plain ceiling.
+  const state = { pos: [0, 0, 0] as V, yaw: 0, pitch: 0, flaky: false, drift: [0, 0, 0] as V };
+  let frameNo = 0, cameraReads = 0;
   W.__xr = state;
 
   const exitBox = (o: V, d: V, b: typeof A) => {
@@ -67,8 +72,10 @@ export function installFakeXR() {
   const makeView = () => {
     const { f, r, u } = basis();
     const p = state.pos;
-    const matrix = new Float32Array([r[0], r[1], r[2], 0, u[0], u[1], u[2], 0, -f[0], -f[1], -f[2], 0, p[0], p[1], p[2], 1]);
-    return { transform: { matrix }, projectionMatrix: projection, camera: { width: CAM_W, height: CAM_H, __pose: { f, r, u, p: [...p] as V } } };
+    const d = state.drift;
+    const matrix = new Float32Array([r[0], r[1], r[2], 0, u[0], u[1], u[2], 0, -f[0], -f[1], -f[2], 0, p[0] + d[0], p[1] + d[1], p[2] + d[2], 1]);
+    const camera = state.flaky && frameNo % 3 === 0 ? undefined : { width: CAM_W, height: CAM_H, __pose: { f, r, u, p: [...p] as V } };
+    return { transform: { matrix }, projectionMatrix: projection, camera };
   };
 
   class FakeSession extends EventTarget {
@@ -86,14 +93,19 @@ export function installFakeXR() {
     requestAnimationFrame(cb: (t: number, frame: unknown) => void) {
       return requestAnimationFrame((t) => {
         if (this.ended) return;
+        frameNo++;
         const view = makeView();
+        const pose = { f: [0, 0, 0] as V, r: [0, 0, 0] as V, u: [0, 0, 0] as V, p: [0, 0, 0] as V, ...(view.camera?.__pose ?? {}) };
+        if (!view.camera) Object.assign(pose, basis(), { p: [...state.pos] });
+        const depthFails = state.flaky && frameNo % 5 === 0;
         cb(t, {
           getViewerPose: () => ({ emulatedPosition: false, views: [view] }),
           getDepthInformation: () => ({
             width: 160,
             height: 120,
             getDepthInMeters: (x: number, y: number) => {
-              const { f, r, u, p } = view.camera.__pose;
+              if (depthFails) throw new DOMException("Depth data is not available for this frame", "InvalidStateError");
+              const { f, r, u, p } = pose;
               const X = (2 * x - 1) / fx, Y = (1 - 2 * y) / fy;
               const d: V = [r[0] * X + u[0] * Y + f[0], r[1] * X + u[1] * Y + f[1], r[2] * X + u[2] * Y + f[2]];
               const len = Math.hypot(...d);
@@ -120,6 +132,7 @@ export function installFakeXR() {
       this.gl = gl;
     }
     getCameraImage(camera: { width: number; height: number; __pose: { f: V; r: V; u: V; p: V } }) {
+      if (state.flaky && ++cameraReads % 4 === 0) throw new DOMException("Camera image is not available", "InvalidStateError");
       const { f, r, u, p } = camera.__pose;
       const w = camera.width, h = camera.height;
       const px = new Uint8Array(w * h * 4);

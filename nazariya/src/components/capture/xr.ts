@@ -29,8 +29,18 @@ export interface ArFeatures {
   localFloor: boolean;
 }
 
+export interface ArStats {
+  /** XR frames per second over the last second. */
+  fps: number;
+  pendingImages: number;
+  pendingDepth: number;
+  /** Last error thrown while reading the camera image or depth (requests are retried, never dropped). */
+  lastError: string | null;
+}
+
 export interface ArSession {
   features: ArFeatures;
+  stats(): ArStats;
   /** Called on every AR frame. */
   onFrame(cb: (f: ArFrame) => void): void;
   /** Camera image of the next frame (null if camera access is unavailable). */
@@ -39,6 +49,8 @@ export interface ArSession {
   sampleDepth(cols?: number, rows?: number): Promise<Float32Array | null>;
   end(): Promise<void>;
   onEnd(cb: () => void): void;
+  /** AR tracking re-based its world origin (positions jump); the browser fires this on the reference space. */
+  onReset(cb: () => void): void;
 }
 
 function xr(): XRSystemLike | null {
@@ -96,9 +108,16 @@ export async function startArSession(overlay: HTMLElement): Promise<ArSession> {
 
   const frameCbs: ((f: ArFrame) => void)[] = [];
   const endCbs: (() => void)[] = [];
+  const resetCbs: (() => void)[] = [];
+  refSpace.addEventListener?.("reset", () => resetCbs.forEach((c) => c()));
   // Several parts of the app may ask for the next frame's image/depth at once: queue, never overwrite.
-  let imageReqs: { maxLong: number; resolve: (r: ArCaptureResult) => void }[] = [];
-  let depthReqs: { cols: number; rows: number; resolve: (p: Float32Array | null) => void }[] = [];
+  // A request is answered on the first frame that can serve it. Frames without a camera image, or a read that
+  // throws, keep it queued for a later frame (up to MAX_TRIES), so a caller can never wait forever.
+  const MAX_TRIES = 45;
+  let imageReqs: { maxLong: number; tries: number; resolve: (r: ArCaptureResult) => void }[] = [];
+  let depthReqs: { cols: number; rows: number; tries: number; resolve: (p: Float32Array | null) => void }[] = [];
+  let lastError: string | null = null;
+  const frameTimes: number[] = [];
   let ended = false;
   session.addEventListener("end", () => {
     ended = true;
@@ -171,32 +190,58 @@ export async function startArSession(overlay: HTMLElement): Promise<ArSession> {
     if (!pose?.views?.length) return;
     const view = pose.views[0];
     const f: ArFrame = { t, matrix: Float32Array.from(view.transform.matrix), projection: Float32Array.from(view.projectionMatrix), limited: !!pose.emulatedPosition };
+    frameTimes.push(t);
+    while (frameTimes.length && frameTimes[0] < t - 1000) frameTimes.shift();
     if (imageReqs.length) {
+      // One camera read per frame, at the largest size anyone asked for.
+      const maxLong = Math.max(...imageReqs.map((r) => r.maxLong));
+      let img: ImageData | null = null;
+      try {
+        img = readCamera(view, maxLong);
+      } catch (e) {
+        lastError = `camera: ${(e as Error).message}`;
+      }
       const reqs = imageReqs;
       imageReqs = [];
-      // One camera read per frame, at the largest size anyone asked for.
-      const maxLong = Math.max(...reqs.map((r) => r.maxLong));
-      const img = readCamera(view, maxLong);
-      for (const r of reqs) r.resolve({ frame: f, image: img && r.maxLong < maxLong ? downscaleImage(img, r.maxLong) : img });
+      for (const r of reqs) {
+        if (img) r.resolve({ frame: f, image: r.maxLong < maxLong ? downscaleImage(img, r.maxLong) : img });
+        else if (++r.tries < MAX_TRIES) imageReqs.push(r);
+        else r.resolve({ frame: f, image: null });
+      }
     }
     if (depthReqs.length) {
       const reqs = depthReqs;
       depthReqs = [];
-      for (const r of reqs) r.resolve(readDepth(frame, view, r.cols, r.rows));
+      for (const r of reqs) {
+        let pts: Float32Array | null = null;
+        try {
+          pts = readDepth(frame, view, r.cols, r.rows);
+        } catch (e) {
+          lastError = `depth: ${(e as Error).message}`;
+        }
+        if (pts || ++r.tries >= MAX_TRIES) r.resolve(pts);
+        else depthReqs.push(r);
+      }
     }
-    frameCbs.forEach((c) => c(f));
+    try {
+      frameCbs.forEach((c) => c(f));
+    } catch (e) {
+      lastError = `frame: ${(e as Error).message}`;
+    }
   };
   session.requestAnimationFrame(onXRFrame);
 
   return {
     features: { depth, camera, localFloor },
+    stats: () => ({ fps: frameTimes.length, pendingImages: imageReqs.length, pendingDepth: depthReqs.length, lastError }),
     onFrame: (cb) => frameCbs.push(cb),
-    captureImage: (maxLong = 1600) => new Promise((resolve) => imageReqs.push({ maxLong, resolve })),
-    sampleDepth: (cols = 40, rows = 30) => new Promise((resolve) => depthReqs.push({ cols, rows, resolve })),
+    captureImage: (maxLong = 1600) => new Promise((resolve) => (ended ? resolve({ frame: { t: 0, matrix: new Float32Array(16), projection: new Float32Array(16), limited: true }, image: null }) : imageReqs.push({ maxLong, tries: 0, resolve }))),
+    sampleDepth: (cols = 40, rows = 30) => new Promise((resolve) => (ended ? resolve(null) : depthReqs.push({ cols, rows, tries: 0, resolve }))),
     end: async () => {
       if (!ended) await session.end();
     },
     onEnd: (cb) => endCbs.push(cb),
+    onReset: (cb) => resetCbs.push(cb),
   };
 }
 

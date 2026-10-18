@@ -7,8 +7,8 @@ import { RING_ORDER, RING_TEXT } from "@/lib/capture-guides";
 import { ROOM_TYPES } from "@/lib/catalog";
 import { angleBetween, nextTarget, panoTargets, targetDir, type Target } from "@/lib/orientation";
 import type { Vec3 } from "@/lib/pano-geometry";
-import { intrinsicsFromProjection, poseFromMatrix, rotY, yawOfDir } from "@/lib/xr-pose";
-import { uploadForm } from "./capture-utils";
+import { intrinsicsFromProjection, moveHint, moveHintText, poseFromMatrix, rotY, yawOfDir } from "@/lib/xr-pose";
+import { captureDebug, sendCaptureDiag, uploadErrorText, uploadForm } from "./capture-utils";
 import { imageDataToJpeg, startArSession, type ArFrame, type ArSession } from "./xr";
 
 interface Room {
@@ -19,11 +19,25 @@ interface Room {
 
 const R2D = 180 / Math.PI;
 const AIM_DEG = 2.5;
-const STILL_DEG = 0.6;
+// Every AR photo comes with the exact pose of its frame, so only motion blur matters: 1.2° per 300 ms (4°/s)
+// blurs under 2 px at 1600 px. (0.6° was too strict: AR poses jitter ~1° when looking at the ceiling.)
+const STILL_DEG = 1.5;
 const HOLD_MS = 350;
-const MAX_ROLL_DEG = 6;
-const PIVOT_M = 0.08; // the lens may wander this far from the capture point
+// Each AR photo carries its full orientation (roll included), so the stitcher handles a tilted phone; the limit
+// only keeps the rows overlapping. Unstable AR tracking also makes measured roll jitter by several degrees.
+const MAX_ROLL_DEG = 15;
+// AR tracking that keeps resetting (seen on phones ARCore isn't calibrated for) can't give a reliable 360° or
+// measurements: after this many re-centres in UNSTABLE_WINDOW_MS, suggest the standard capture.
+const UNSTABLE_RECENTRES = 4;
+const UNSTABLE_WINDOW_MS = 30_000;
+const UNSTABLE_KEY = "nz-ar-unstable";
+const PIVOT_M = 0.08; // beyond this the app suggests bringing the lens back (seams start to show); never blocks
+// Someone turning on the spot cannot be this far from it: the AR position has drifted (plain ceiling/walls give
+// the tracker nothing to hold on to) or the tracker re-based its origin. The spot is then re-centred.
+const TRACKING_DRIFT_M = 0.5;
+const FRAME_JUMP_M = 0.25; // position change between two frames (~33 ms) that is a tracking jump, not movement
 const MAX_POINTS = 300_000;
+const CAPTURE_TIMEOUT_MS = 4000; // a shot that takes longer is abandoned and retried
 
 interface Shot {
   target: number;
@@ -72,6 +86,39 @@ export function ArCapture({
   const lastYaw = useRef<number | null>(null);
   const holdSince = useRef<number | null>(null);
   const busy = useRef(false);
+  const busySince = useRef(0);
+  const lastShotAt = useRef(0);
+  const lastHud = useRef(0);
+  const failures = useRef(0);
+  const recentred = useRef(0);
+  const recentredAt = useRef(0);
+  const lastPos = useRef<Vec3 | null>(null);
+  const resetPending = useRef(false);
+  const recentreTimes = useRef<number[]>([]);
+  const [unstable, setUnstable] = useState(false);
+  const snoozeUntil = useRef(0);
+  const [unstableBefore] = useState(() => {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(UNSTABLE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const noteRecentre = (now: number) => {
+    recentred.current += 1;
+    recentredAt.current = now;
+    const r = recentreTimes.current;
+    r.push(now);
+    while (r.length && r[0] < now - UNSTABLE_WINDOW_MS) r.shift();
+    if (r.length >= UNSTABLE_RECENTRES && now > snoozeUntil.current) {
+      setUnstable(true);
+      try {
+        localStorage.setItem(UNSTABLE_KEY, "1");
+      } catch {}
+    }
+  };
+  const lastFailure = useRef<string | null>(null);
+  const gate = useRef<{ aim: number; roll: number; wander: number; drift: number; limited: boolean; blocked: string | null; nextId: number | null }>({ aim: 0, roll: 0, wander: 0, drift: 0, limited: false, blocked: null, nextId: null });
   const points = useRef<Float32Array[]>([]);
   const pointCount = useRef(0);
   const path = useRef<[number, number, number][]>([]);
@@ -83,9 +130,38 @@ export function ArCapture({
   const [kfCount, setKfCount] = useState(0);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
-  const [hud, setHud] = useState<{ next: { x: number; y: number; on: boolean; aim: number } | null; nextId: number | null; arrow: number | null; drift: number; roll: number; hold: number; pts: number; limited: boolean }>({ next: null, nextId: null, arrow: null, drift: 0, roll: 0, hold: 0, pts: 0, limited: false });
+  const [hud, setHud] = useState<{ next: { x: number; y: number; on: boolean; aim: number } | null; nextId: number | null; arrow: number | null; drift: number; move: string; roll: number; hold: number; pts: number; limited: boolean; blocked: string | null; debug: string }>({ next: null, nextId: null, arrow: null, drift: 0, move: "", roll: 0, hold: 0, pts: 0, limited: false, blocked: null, debug: "" });
+  const debug = useMemo(() => captureDebug(), []);
+  const gateAt = useRef(0);
+  const frameCalls = useRef(0);
+  const earlyReturn = useRef<Record<string, number>>({});
 
   useEffect(() => () => void ar.current?.end(), []);
+
+  // Field diagnostics: every second in debug mode (?debug=1), otherwise when no photo was taken for 8 s, plus
+  // shot failures and upload errors. Shows what the capture gate sees on a real phone without a cable.
+  const diag = (event: string, extra: Record<string, unknown> = {}) => {
+    const g = gate.current, now = performance.now();
+    sendCaptureDiag({
+      mode: "depth", event, spaceId, sessionId, shots: shotsRef.current.length, nextTarget: g.nextId,
+      aimDeg: +g.aim.toFixed(2), rollDeg: +g.roll.toFixed(1), wanderDeg: Number.isFinite(g.wander) ? +g.wander.toFixed(2) : null,
+      offSpotCm: Math.round(g.drift * 100), limited: g.limited, blocked: g.blocked,
+      busyMs: busy.current ? Math.round(now - busySince.current) : 0, failures: failures.current, lastFailure: lastFailure.current,
+      recentred: recentred.current, unstable: recentreTimes.current.length >= UNSTABLE_RECENTRES,
+      gateAgeMs: Math.round(now - gateAt.current), frameCalls: frameCalls.current, earlyReturn: earlyReturn.current,
+      xr: ar.current?.stats() ?? null, secondsSinceShot: Math.round((now - lastShotAt.current) / 1000), ...extra,
+    }, token);
+  };
+  useEffect(() => {
+    if (phase !== "capturing") return;
+    lastShotAt.current = performance.now();
+    const id = setInterval(() => {
+      if (debug) diag("live");
+      else if (performance.now() - lastShotAt.current > 8000) diag("stall");
+    }, debug ? 1000 : 4000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, debug]);
 
   const addPoints = (p: Float32Array | null) => {
     if (!p?.length || pointCount.current >= MAX_POINTS) return;
@@ -97,20 +173,31 @@ export function ArCapture({
     const s = ar.current;
     if (!s || busy.current) return;
     busy.current = true;
+    busySince.current = performance.now();
     try {
-      const [{ frame, image }, depth] = await Promise.all([s.captureImage(1600), s.features.depth ? s.sampleDepth(64, 48) : Promise.resolve(null)]);
-      if (!image) throw new Error("This phone did not provide the camera image");
+      const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), CAPTURE_TIMEOUT_MS));
+      const [{ frame, image }, depth] = await Promise.race([Promise.all([s.captureImage(1600), s.features.depth ? s.sampleDepth(64, 48) : Promise.resolve(null)]), timeout]);
+      if (!image) throw new Error("no image");
       addPoints(depth);
       const blob = await imageDataToJpeg(image);
       const shot: Shot = { target: t.id, blob, m: Array.from(frame.matrix), w: image.width, h: image.height, projection: Array.from(frame.projection) };
+      // The spot is where the first photo was taken (the phone often moves between "Start here" and the first shot).
+      if (!shotsRef.current.length) capturePoint.current = poseFromMatrix(frame.matrix).position;
       shotsRef.current = [...shotsRef.current, shot];
       setShots(shotsRef.current);
       lastYaw.current = t.yaw;
+      lastShotAt.current = performance.now();
+      setErr(null);
+      if (debug) diag("shot", { target: t.id });
       try {
         navigator.vibrate?.(30);
       } catch {}
     } catch (e) {
-      setErr((e as Error).message);
+      // Not fatal: the same dot is simply taken again on the next steady hold.
+      failures.current += 1;
+      lastFailure.current = (e as Error).message;
+      diag("shot_failed", { target: t.id });
+      setErr("The camera didn't deliver that photo. Hold steady on the dot to retry.");
     } finally {
       holdSince.current = null;
       setTimeout(() => (busy.current = false), 350);
@@ -120,6 +207,7 @@ export function ArCapture({
   const onFrame = (f: ArFrame) => {
     frameRef.current = f;
     const now = performance.now();
+    frameCalls.current += 1;
     const pose = poseFromMatrix(f.matrix);
     const h = history.current;
     h.push({ t: now, f: pose.basis.forward, u: pose.basis.up });
@@ -134,19 +222,40 @@ export function ArCapture({
     if (ph === "walking" && recordRef.current && !f.limited) maybeKeyframe(pose, now);
     if (ph !== "capturing") return;
     const overlay = overlayRef.current;
-    if (!overlay) return;
+    if (!overlay) {
+      earlyReturn.current.noOverlay = (earlyReturn.current.noOverlay ?? 0) + 1;
+      return;
+    }
     const W = overlay.clientWidth, H = overlay.clientHeight, P = f.projection;
     const fwdRoom = rotY(pose.basis.forward, -headingRef.current);
     const done = new Set(shotsRef.current.map((s) => s.target));
     const nt = nextTarget(targets, done, lastYaw.current, yawOfDir(fwdRoom));
-    const cp = capturePoint.current!;
-    const drift = Math.hypot(pose.position[0] - cp[0], pose.position[1] - cp[1], pose.position[2] - cp[2]);
+    // Position is advisory only (the panorama needs orientation, which stays good when position drifts).
+    const prevPos = lastPos.current;
+    lastPos.current = pose.position;
+    let cp = capturePoint.current;
+    if (cp && prevPos) {
+      const jump = Math.hypot(pose.position[0] - prevPos[0], pose.position[1] - prevPos[1], pose.position[2] - prevPos[2]);
+      if (resetPending.current || jump > FRAME_JUMP_M) {
+        // Tracking jumped: move the spot with it.
+        cp = [cp[0] + pose.position[0] - prevPos[0], cp[1] + pose.position[1] - prevPos[1], cp[2] + pose.position[2] - prevPos[2]];
+        resetPending.current = false;
+        noteRecentre(now);
+      }
+    }
+    if (cp && Math.hypot(pose.position[0] - cp[0], pose.position[1] - cp[1], pose.position[2] - cp[2]) > TRACKING_DRIFT_M) {
+      cp = pose.position;
+      noteRecentre(now);
+    }
+    capturePoint.current = cp;
+    const drift = cp ? Math.hypot(pose.position[0] - cp[0], pose.position[1] - cp[1], pose.position[2] - cp[2]) : 0;
+    const move = cp && drift > PIVOT_M ? moveHintText(moveHint(pose.position, cp, pose.basis)) : "";
     // Roll: world-up projected into the image plane.
     const roll = Math.atan2(pose.basis.right[1], pose.basis.up[1]) * R2D;
     const recent = h.filter((x) => x.t >= now - 300);
     const latest = h[h.length - 1];
     const wander = recent.length < 3 ? Infinity : Math.max(...recent.map((x) => Math.max(angleBetween(x.f, latest.f), angleBetween(x.u, latest.u)))) * R2D;
-    let next = null, arrow = null, hold = 0;
+    let next = null, arrow = null, hold = 0, blocked: string | null = null;
     if (nt) {
       const d = rotY(targetDir(nt), headingRef.current);
       const xc = d[0] * pose.basis.right[0] + d[1] * pose.basis.right[1] + d[2] * pose.basis.right[2];
@@ -162,14 +271,31 @@ export function ArCapture({
       }
       next = { x, y, on, aim };
       if (!on) arrow = Math.atan2(-yc, xc) * R2D;
-      const ok = aim <= AIM_DEG && Math.abs(roll) <= MAX_ROLL_DEG && wander <= STILL_DEG && drift <= PIVOT_M + 0.02 && !f.limited;
+      // Roll is undefined when looking straight up or down, so it is only checked for the other rows.
+      const rollOk = nt.ring === "zenith" || nt.ring === "nadir" || Math.abs(roll) <= MAX_ROLL_DEG;
+      blocked = f.limited
+        ? "Tracking lost: move slowly and point at a textured area"
+        : !rollOk
+          ? `Straighten the phone (tilted ${Math.round(Math.abs(roll))}°)`
+          : wander > STILL_DEG
+            ? "Hold still…"
+            : null;
+      const ok = aim <= AIM_DEG && !blocked;
       if (ok) {
         holdSince.current ??= now;
         hold = Math.min(1, (now - holdSince.current) / HOLD_MS);
         if (hold >= 1 && !busy.current) void doCapture(nt);
       } else holdSince.current = null;
     }
-    setHud({ next, nextId: nt?.id ?? null, arrow, drift, roll, hold, pts: pointCount.current, limited: f.limited });
+    gate.current = { aim: next?.aim ?? -1, roll, wander, drift, limited: f.limited, blocked, nextId: nt?.id ?? null };
+    gateAt.current = now;
+    // The camera view is drawn by the browser; re-render the overlay at ~20 Hz, not on every AR frame.
+    if (now - lastHud.current < 50 && hold < 1) return;
+    lastHud.current = now;
+    setHud({
+      next, nextId: nt?.id ?? null, arrow, drift, move, roll, hold, pts: pointCount.current, limited: f.limited, blocked,
+      debug: debug && next ? `aim ${next.aim.toFixed(1)}° · roll ${roll.toFixed(1)}° · wander ${wander.toFixed(2)}° · off spot ${Math.round(drift * 100)} cm · tracking ${f.limited ? "limited" : "ok"}` : "",
+    });
   };
 
   const flushKeyframes = async () => {
@@ -220,6 +346,7 @@ export function ArCapture({
       ar.current = s;
       setFeatures(s.features);
       s.onFrame(onFrame);
+      s.onReset(() => (resetPending.current = true));
       s.onEnd(() => {
         ar.current = null;
         setPhase((p) => (p === "uploading" ? p : "intro"));
@@ -242,7 +369,9 @@ export function ArCapture({
     const f = frameRef.current;
     if (!f || !roomId) return;
     const pose = poseFromMatrix(f.matrix);
-    capturePoint.current = pose.position;
+    capturePoint.current = null;
+    recentreTimes.current = [];
+    setUnstable(false);
     headingRef.current = yawOfDir(pose.basis.forward);
     lastYaw.current = null;
     shotsRef.current = [];
@@ -285,7 +414,8 @@ export function ArCapture({
     if (total) fd.set("points", new File([all.buffer], "points.f32", { type: "application/octet-stream" }));
     const r = await uploadForm("/api/captures/ar-room", fd, token);
     if (!r.ok) {
-      setErr(r.data.error ?? "Upload failed");
+      diag("upload_failed", { error: uploadErrorText(r.data) });
+      setErr(uploadErrorText(r.data));
       setPhase("capturing");
       return;
     }
@@ -308,13 +438,18 @@ export function ArCapture({
     setNewRoom({ label: "", roomType: newRoom.roomType });
   };
 
+  const [finishing, setFinishing] = useState(false);
   const end = async () => {
+    setFinishing(true);
+    setPhase("uploading"); // keeps the screen on "Finishing…" while the last walk photos upload
     await ar.current?.end();
     await flushKeyframes();
     // Build the 3D walkthrough dataset from everything recorded in this session.
     if (kf.current.sent > 0 || captured.length > 0) {
       await fetch("/api/captures/ar-walk/finish", { method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-capture-token": token } : {}) }, body: JSON.stringify({ spaceId, sessionId }) }).catch(() => {});
     }
+    setFinishing(false);
+    setPhase("intro");
     onFinished(captured.length ? `${captured.length} room${captured.length > 1 ? "s" : ""} captured in depth mode (${captured.join(", ")}). They are measured, placed on the floor plan and connected automatically.` : "Depth mode closed.");
   };
 
@@ -330,6 +465,11 @@ export function ArCapture({
         <div className="flex-1 overflow-y-auto p-5" data-testid="ar-intro">
           {done && <div className="mb-4 rounded-xl bg-emerald-500/20 p-3 text-sm text-emerald-100" data-testid="capture-done">{done}</div>}
           <p className="text-xs uppercase tracking-wide text-emerald-300">📐 Depth mode available on this phone</p>
+          {unstableBefore && (
+            <p className="mt-2 rounded-xl bg-amber-500/20 p-3 text-sm text-amber-100" data-testid="ar-unstable-before">
+              Last time, AR tracking on this phone kept resetting. If that happens again, the standard 360° capture below gives a better result.
+            </p>
+          )}
           <h2 className="mt-1 text-2xl font-extrabold">Measure and capture the whole home</h2>
           <ul className="mt-3 space-y-2 text-sm text-white/85">
             <li>• Uses the phone&apos;s AR tracking and depth: the room is <b>measured</b> (width, length, height) and the 3D uses its real shape.</li>
@@ -368,16 +508,43 @@ export function ArCapture({
             {hud.limited && <span className="rounded-full bg-rose-600 px-2.5 py-1">Tracking lost: move slowly, point at textured areas</span>}
             {phase === "capturing" && <span className="ml-auto rounded-full bg-black/60 px-3 py-1 text-sm" data-testid="ar-progress">{shots.length}/{targets.length}</span>}
           </div>
-          {phase === "capturing" && hud.drift > PIVOT_M && (
+          {phase === "capturing" && performance.now() - recentredAt.current < 3000 && (
+            <div className="absolute inset-x-0 top-12 mx-auto w-fit rounded-full bg-sky-600 px-3 py-1 text-sm font-bold" data-testid="ar-recentred">
+              AR tracking slipped: re-centred. Keep standing on the same spot.
+            </div>
+          )}
+          {phase === "capturing" && hud.drift > PIVOT_M && performance.now() - recentredAt.current >= 3000 && (
             <div className="absolute inset-x-0 top-12 mx-auto w-fit rounded-full bg-amber-500 px-3 py-1 text-sm font-bold text-ink" data-testid="ar-drift">
-              Phone moved {Math.round(hud.drift * 100)} cm: bring it back to the spot
+              Phone is {Math.round(hud.drift * 100)} cm off the spot: move it {hud.move}
             </div>
           )}
           <div className="absolute inset-x-2 bottom-2 space-y-2 rounded-xl bg-black/65 p-3 text-sm backdrop-blur" data-testid="ar-guide" data-next-target={hud.nextId ?? ""} data-phase={phase}>
+            {phase === "capturing" && unstable && (
+              <div className="space-y-2 rounded-lg bg-amber-500/25 p-2" data-testid="ar-unstable">
+                <p className="font-bold text-amber-100">AR tracking on this phone keeps resetting ({recentred.current}×), so depth mode can&apos;t measure this room reliably.</p>
+                <p className="text-white/80">The standard 360° capture uses the motion sensors directly and works well on this phone.</p>
+                <div className="flex gap-2">
+                  <button type="button" className="flex-1 rounded-lg bg-white py-2 font-bold text-ink" data-testid="ar-switch-standard" onClick={async () => {
+                    await ar.current?.end();
+                    onFallback("Switched to the standard 360° capture because AR tracking kept resetting on this phone.");
+                  }}>
+                    Use standard 360°
+                  </button>
+                  <button type="button" className="rounded-lg bg-white/15 px-3 py-2" onClick={() => {
+                    snoozeUntil.current = performance.now() + 60_000;
+                    recentreTimes.current = [];
+                    setUnstable(false);
+                  }}>
+                    Keep trying
+                  </button>
+                </div>
+              </div>
+            )}
             {phase === "capturing" && (
               <>
                 <p className="font-bold">{room?.label}: {ring ? RING_TEXT[ring] : "All done!"}</p>
-                <p className="text-white/80">{aligned ? "Hold still…" : "Move the ring onto the orange dot. Keep the lens on the same spot."}</p>
+                <p className="text-white/80" data-testid="ar-hint">{aligned ? (hud.blocked ?? "Hold still…") : "Move the ring onto the orange dot. Keep the lens on the same spot."}</p>
+                {hud.debug && <p className="font-mono text-[11px] text-white/70" data-testid="ar-debug">{hud.debug}</p>}
                 <div className="flex gap-2">
                   <button type="button" disabled={!canFinish} onClick={finishRoom} className="flex-1 rounded-xl bg-white py-2 font-bold text-ink disabled:opacity-40" data-testid="ar-finish-room">
                     Finish room
@@ -385,7 +552,7 @@ export function ArCapture({
                 </div>
               </>
             )}
-            {phase === "uploading" && <p data-testid="ar-uploading">Uploading {room?.label}…</p>}
+            {phase === "uploading" && <p data-testid="ar-uploading">{finishing ? "Finishing: uploading the last walk photos…" : `Uploading ${room?.label}…`}</p>}
             {(phase === "ready" || phase === "walking") && (
               <>
                 {msg && <p className="text-emerald-200" data-testid="ar-msg">{msg}</p>}

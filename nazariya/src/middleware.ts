@@ -8,7 +8,10 @@ async function policy(req: NextRequest, publicId: string): Promise<string | null
   const hit = cache.get(publicId);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
   try {
-    const r = await fetch(new URL(`/api/embed-policy/${publicId}`, req.nextUrl.origin), { cache: "no-store" });
+    // Behind a TLS-terminating proxy or load balancer the public origin is not reachable from the app itself
+    // (and a failed lookup blocks every embed), so ask the app directly when INTERNAL_APP_URL is set.
+    const base = process.env.INTERNAL_APP_URL || req.nextUrl.origin;
+    const r = await fetch(new URL(`/api/embed-policy/${publicId}`, base), { cache: "no-store" });
     const { frameAncestors } = (await r.json()) as { frameAncestors: string | null };
     cache.set(publicId, { value: frameAncestors, at: Date.now() });
     return frameAncestors;

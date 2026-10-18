@@ -87,6 +87,37 @@ export function useOrientation(active: boolean) {
 }
 
 /** Readings per second over the buffered window (for diagnostics). */
+/** Capture debugging is on with ?debug=1 in the URL (remembered on this phone until ?debug=0). */
+export function captureDebug(): boolean {
+  if (typeof window === "undefined") return false;
+  const q = new URLSearchParams(window.location.search).get("debug");
+  try {
+    if (q === "0") localStorage.removeItem("nz-debug");
+    else if (q !== null) localStorage.setItem("nz-debug", "1");
+    return localStorage.getItem("nz-debug") === "1";
+  } catch {
+    return q !== null && q !== "0";
+  }
+}
+
+/** Report capture state to the server log (stalls, failures, and every second in debug mode). Never throws. */
+export function sendCaptureDiag(body: Record<string, unknown>, token: string | null) {
+  try {
+    void fetch("/api/captures/diag", { method: "POST", keepalive: true, headers: { "content-type": "application/json", ...(token ? { "x-capture-token": token } : {}) }, body: JSON.stringify({ at: Date.now(), ...body }).slice(0, 3900) }).catch(() => {});
+  } catch {}
+}
+
+/** Server error message including validation details, for showing to the user. */
+export function uploadErrorText(data: { error?: string; details?: unknown }): string {
+  const details = Array.isArray(data.details) ? data.details.filter((d) => typeof d === "string").slice(0, 3) : [];
+  return `${data.error ?? "Upload failed"}${details.length ? ` (${details.join("; ")})` : ""}`;
+}
+
+/** A finite number within [lo, hi], or undefined (for optional diagnostics that must never fail an upload). */
+export function finiteIn(v: number, lo: number, hi: number): number | undefined {
+  return Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : undefined;
+}
+
 export function sensorRate(samples: OrientationSample[]): number {
   if (samples.length < 2) return 0;
   return ((samples.length - 1) * 1000) / (samples[samples.length - 1].t - samples[0].t);
@@ -94,6 +125,7 @@ export function sensorRate(samples: OrientationSample[]): number {
 
 /** Fallback camera latency when the browser does not report frame capture times. */
 export const DEFAULT_CAMERA_LATENCY_MS = 90;
+const MIN_PLAUSIBLE_CAMERA_LATENCY_MS = 25;
 
 type FrameMeta = { captureTime?: number; expectedDisplayTime?: number };
 type VideoWithRvfc = HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: FrameMeta) => void) => number; cancelVideoFrameCallback?: (h: number) => void };
@@ -109,10 +141,13 @@ export function useVideoFrameClock(videoRef: React.RefObject<HTMLVideoElement | 
     if (!active || !v?.requestVideoFrameCallback) return;
     let handle = 0;
     const tick = (now: number, meta: FrameMeta) => {
-      if (typeof meta.captureTime === "number" && meta.captureTime > 0 && now - meta.captureTime < 1000) {
-        const lat = now - meta.captureTime;
-        clock.current = { captureTime: meta.captureTime, latencyMs: clock.current.latencyMs * 0.9 + lat * 0.1, sync: "camera" };
-      } else clock.current = { ...clock.current, captureTime: now - clock.current.latencyMs, sync: "estimated" };
+      // A real camera pipeline takes ≥ 25 ms from exposure to screen. Some phones report a captureTime that is
+      // ~0 ms old or even in the future (seen on a Nothing Phone (1)); using it draws the guide dots for the wrong
+      // moment, so they slide off the room while turning. Such timestamps are ignored and a typical latency used.
+      const lat = typeof meta.captureTime === "number" && meta.captureTime > 0 ? now - meta.captureTime : -1;
+      if (lat >= MIN_PLAUSIBLE_CAMERA_LATENCY_MS && lat < 1000) {
+        clock.current = { captureTime: meta.captureTime!, latencyMs: clock.current.sync === "camera" ? clock.current.latencyMs * 0.9 + lat * 0.1 : lat, sync: "camera" };
+      } else clock.current = { captureTime: now - DEFAULT_CAMERA_LATENCY_MS, latencyMs: DEFAULT_CAMERA_LATENCY_MS, sync: "estimated" };
       handle = v.requestVideoFrameCallback!(tick);
     };
     handle = v.requestVideoFrameCallback(tick);
@@ -146,7 +181,8 @@ export function grabSyncedFrame(video: HTMLVideoElement, maxLong = 1600, quality
   if (!v.requestVideoFrameCallback) return draw(performance.now() - DEFAULT_CAMERA_LATENCY_MS);
   return new Promise((resolve, reject) => {
     v.requestVideoFrameCallback!((now, meta) => {
-      const ct = typeof meta.captureTime === "number" && meta.captureTime > 0 && now - meta.captureTime < 1000 ? meta.captureTime : now - DEFAULT_CAMERA_LATENCY_MS;
+      const lat = typeof meta.captureTime === "number" && meta.captureTime > 0 ? now - meta.captureTime : -1;
+      const ct = lat >= MIN_PLAUSIBLE_CAMERA_LATENCY_MS && lat < 1000 ? meta.captureTime! : now - DEFAULT_CAMERA_LATENCY_MS;
       draw(ct).then(resolve, reject);
     });
   });

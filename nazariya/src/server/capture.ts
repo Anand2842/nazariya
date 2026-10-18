@@ -69,7 +69,8 @@ export const panoCaptureMetaSchema = z.object({
   device: z.string().max(300).default(""),
   fovHintDeg: z.number().min(30).max(120).optional(),
   // What the phone reported during capture (helps support diagnose a bad capture).
-  diag: z.object({ sensorHz: z.number().min(0).max(1000), frameSync: z.enum(["camera", "estimated"]), latencyMs: z.number().min(0).max(2000) }).partial().optional(),
+  // Diagnostics never reject a capture: anything malformed is dropped.
+  diag: z.object({ sensorHz: z.number().min(0).max(1000), frameSync: z.enum(["camera", "estimated"]), latencyMs: z.number().min(0).max(2000) }).partial().optional().catch(undefined),
   frames: z
     .array(
       z.object({

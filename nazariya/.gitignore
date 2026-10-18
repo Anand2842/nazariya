@@ -13,3 +13,6 @@ next-env.d.ts
 *.mark
 .shots/
 .certs/
+__pycache__/
+*.py[cod]
+*.jsonl

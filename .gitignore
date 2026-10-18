@@ -45,6 +45,17 @@ next-env.d.ts
 *.swp
 *.swo
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Telemetry and live logs
+*.jsonl
+
+# Binaries and downloaded tooling
+tools/
+
 # Local agent configs & legacy artifacts
 .claude/
 .agents/
