@@ -95,6 +95,13 @@ export default function SplatView({
           const o = new THREE.Vector3(...tf.offset).multiplyScalar(tf.scale || 1).applyQuaternion(mesh.quaternion);
           mesh.position.copy(o.negate());
         }
+        // Reconstructed scans are only sharp near where the phone was: the walked path in viewer coordinates (x, z).
+        mesh.updateMatrixWorld(true);
+        const walk = (tf.path ?? []).map((p) => {
+          const v = new THREE.Vector3(...p).applyMatrix4(mesh.matrixWorld);
+          return [v.x, v.z] as const;
+        });
+        const PATH_R = 0.5;
         if (disposed) {
           renderer.dispose();
           return;
@@ -184,8 +191,22 @@ export default function SplatView({
           if (f || r) {
             pos.x += (Math.sin(yaw) * f + Math.cos(yaw) * r) * dt * 0.8;
             pos.z += (-Math.cos(yaw) * f + Math.sin(yaw) * r) * dt * 0.8;
-            const len = Math.hypot(pos.x, pos.z);
-            if (len > MAX_R) pos.multiplyScalar(MAX_R / len);
+            if (walk.length) {
+              // Stay within PATH_R of the nearest point of the walk.
+              let best = Infinity, bx = 0, bz = 0;
+              for (const [x, z] of walk) {
+                const d = (pos.x - x) ** 2 + (pos.z - z) ** 2;
+                if (d < best) [best, bx, bz] = [d, x, z];
+              }
+              const d = Math.sqrt(best);
+              if (d > PATH_R) {
+                pos.x = bx + ((pos.x - bx) * PATH_R) / d;
+                pos.z = bz + ((pos.z - bz) * PATH_R) / d;
+              }
+            } else {
+              const len = Math.hypot(pos.x, pos.z);
+              if (len > MAX_R) pos.multiplyScalar(MAX_R / len);
+            }
           }
           camera.position.copy(pos);
           camera.rotation.set(pitch, -yaw, 0);

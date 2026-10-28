@@ -68,7 +68,7 @@ export function CaptureStudio({
   }, []);
 
   const begin = async () => {
-    if (mode === "pano") await requestOrientationPermission();
+    if (mode === "pano" || mode === "video") await requestOrientationPermission();
     setDone(null);
     setStarted(true);
   };
@@ -651,18 +651,35 @@ function PanoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId: 
 
 // ---------------- Guided video ----------------
 
+// Two laps give the 3D reconstruction every wall from two directions: along the walls looking across the room, then
+// through the middle looking out.
 const VIDEO_TIPS: [number, string][] = [
-  [0, "Start at the door. Walk in slowly"],
-  [8, "Pan slowly across the first wall"],
-  [20, "Keep going around the room, corner by corner"],
-  [40, "Show windows, storage and fittings"],
-  [60, "Finish where you started"],
-  [90, "Great, you can stop now"],
+  [0, "Lap 1: walk slowly along the walls, phone pointing across the room"],
+  [75, "Lap 2: walk through the middle, phone pointing out at the walls and into each corner"],
+  [150, "Finish where you started, then stop"],
 ];
+const VIDEO_MAX_S = 180;
+
+/** The one thing to fix right now, most important first; null when the shot is good. Motion/sharpness limits as in QualityChips. */
+function videoProblem(q: FrameQuality | null, pitch: number | null, landscape: boolean): string | null {
+  if (!landscape) return "Turn the phone sideways";
+  if (pitch != null && pitch > 25) return "Pointing at the ceiling: lower it to eye level";
+  if (pitch != null && pitch < -35) return "Pointing at the floor: raise it to eye level";
+  if (q && q.motion > 14) return "Too fast: slow down";
+  // Still but no detail: a plain wall, which the 3D solve can't place.
+  if (q && q.sharpness < 25) return "Too plain: step back, or keep a door, shelf or corner in view";
+  return null;
+}
 
 function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId: string; room: Room; token: string | null; onFinished: (m: string) => void; onCancel: () => void }) {
   const { videoRef, ready, error, stream } = useCamera(true);
   const q = useFrameQuality(videoRef, ready);
+  const { angles } = useOrientation(true);
+  const [pitch, setPitch] = useState<number | null>(null);
+  const [landscape, setLandscape] = useState(true);
+  const problem = videoProblem(q, pitch, landscape);
+  const problemRef = useRef(problem);
+  const framed = useRef({ ok: 0, all: 0 });
   const rec = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const [recording, setRecording] = useState(false);
@@ -673,11 +690,27 @@ function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId:
   const startedAt = useRef(0);
 
   useEffect(() => {
+    const id = setInterval(() => {
+      const a = angles.current;
+      if (a) setPitch(pitchOf(tourBasis(a, 0).forward) * R2D);
+      setLandscape(window.innerWidth > window.innerHeight);
+    }, 250);
+    return () => clearInterval(id);
+  }, [angles]);
+  useEffect(() => {
+    problemRef.current = problem;
+    // A short buzz when something needs fixing, so the coaching works without staring at the screen.
+    if (recording && problem) navigator.vibrate?.(60);
+  }, [recording, problem]);
+
+  useEffect(() => {
     if (!recording) return;
     const id = setInterval(() => {
       const s = (Date.now() - startedAt.current) / 1000;
       setElapsed(s);
-      if (s >= 120) rec.current?.stop();
+      framed.current.all++;
+      if (!problemRef.current) framed.current.ok++;
+      if (s >= VIDEO_MAX_S) rec.current?.stop();
     }, 250);
     return () => clearInterval(id);
   }, [recording]);
@@ -687,8 +720,9 @@ function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId:
   const start = () => {
     if (!stream) return;
     const mimeType = pickRecorderMime();
-    const r = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 });
+    const r = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
     chunks.current = [];
+    framed.current = { ok: 0, all: 0 };
     r.ondataavailable = (e) => e.data.size && chunks.current.push(e.data);
     r.onstop = () => {
       setRecording(false);
@@ -722,6 +756,7 @@ function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId:
 
   const tip = [...VIDEO_TIPS].reverse().find(([t]) => elapsed >= t)?.[1] ?? VIDEO_TIPS[0][1];
   const mm = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, "0")}`;
+  const framedPct = framed.current.all ? Math.round((100 * framed.current.ok) / framed.current.all) : null;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -731,7 +766,12 @@ function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId:
           <video ref={videoRef} playsInline muted autoPlay className="absolute inset-0 h-full w-full object-cover" data-testid="camera-video" />
         )}
         {!result && <div className="absolute inset-x-2 top-2 flex justify-between"><QualityChips q={q} /><span className={`rounded-full px-3 py-1 text-sm font-bold ${recording ? "bg-rose-600" : "bg-black/60"}`} data-testid="video-timer">{recording ? "● " : ""}{mm}</span></div>}
-        {!result && <div className="absolute inset-x-2 bottom-2 rounded-xl bg-black/60 p-3 text-sm font-semibold backdrop-blur" data-testid="video-tip">{recording ? tip : "Tap record when you're at the door"}</div>}
+        {!result && (
+          <div className="absolute inset-x-2 bottom-2 space-y-2">
+            {problem && <div className="rounded-xl bg-amber-500 p-3 text-base font-bold text-ink" data-testid="video-problem">{problem}</div>}
+            <div className="rounded-xl bg-black/60 p-3 text-sm font-semibold backdrop-blur" data-testid="video-tip">{recording ? tip : "Stand at the door, then tap record"}</div>
+          </div>
+        )}
       </div>
       <div className="flex items-center justify-between gap-3 bg-black px-4 pb-6 pt-3">
         <button type="button" className="rounded-xl bg-white/10 px-3 py-2 text-sm" onClick={() => (result ? (URL.revokeObjectURL(result.url), setResult(null)) : onCancel())}>{result ? "Retake" : "Cancel"}</button>
@@ -745,6 +785,11 @@ function VideoCapture({ spaceId, room, token, onFinished, onCancel }: { spaceId:
         </button>
       </div>
       {result && elapsed < 15 && <p className="bg-amber-500 p-2 text-center text-sm text-ink">Short clip: at least 15 seconds works best.</p>}
+      {result && framedPct !== null && (
+        <p className={`p-2 text-center text-sm ${framedPct >= 70 ? "bg-emerald-600" : "bg-amber-500 text-ink"}`} data-testid="video-framed">
+          Well filmed {framedPct}% of the time{framedPct >= 70 ? "" : ". A retake following the yellow hints will give a sharper 3D tour"}
+        </p>
+      )}
       {err && <p className="bg-rose-600 p-2 text-center text-sm" role="alert">{err}</p>}
     </div>
   );

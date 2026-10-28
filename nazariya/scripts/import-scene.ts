@@ -23,9 +23,9 @@ const [asset] = await db
   .values({ orgId: space.orgId, spaceId: space.id, kind: "splat", storageKey: key, mime: ext === "ply" ? "model/ply" : "model/spz", bytes: buf.byteLength, sha256: sha256(buf), originalName: path.basename(file), meta: { zoneId, importedBy: "import-scene" } })
   .returning();
 console.log(await processSplatImport(asset.id));
-const tf = transformFile ? (JSON.parse(await readFile(transformFile, "utf8")) as { align: number[]; scale: number; offset: number[]; startYaw?: number }) : null;
+const tf = transformFile ? (JSON.parse(await readFile(transformFile, "utf8")) as { align: number[]; scale: number; offset: number[]; startYaw?: number; path?: number[][] }) : null;
 await db
   .update(zones)
-  .set({ splatSource: "reconstructed", ...(tf ? { splatTransform: { flip: false, yawDeg: 0, scale: tf.scale, align: tf.align, offset: tf.offset }, ...(tf.startYaw !== undefined ? { startYaw: tf.startYaw } : {}) } : {}) })
+  .set({ splatSource: "reconstructed", ...(tf ? { splatTransform: { flip: false, yawDeg: 0, scale: tf.scale, align: tf.align, offset: tf.offset, ...(tf.path?.length ? { path: tf.path } : {}) }, ...(tf.startYaw !== undefined ? { startYaw: tf.startYaw } : {}) } : {}) })
   .where(eq(zones.id, zoneId));
 process.exit(0);

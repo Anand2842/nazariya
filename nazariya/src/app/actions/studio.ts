@@ -91,8 +91,8 @@ export async function setScanTransformAction(spaceId: string, zoneId: string, t:
     const [z] = await db.select({ t: zones.splatTransform }).from(zones).where(and(eq(zones.id, zoneId), eq(zones.spaceId, spaceId)));
     if (!z) throw new DomainError("Room not in this space", "not_found");
     // Keep what the reconstruction worked out (upright alignment, start point); the editor adjusts the rest.
-    const prev = z.t as { offset?: [number, number, number]; align?: [number, number, number, number] };
-    await db.update(zones).set({ splatTransform: { flip: !!t.flip, yawDeg, scale, ...(prev.offset ? { offset: prev.offset } : {}), ...(prev.align ? { align: prev.align } : {}) } }).where(eq(zones.id, zoneId));
+    const prev = z.t as { offset?: [number, number, number]; align?: [number, number, number, number]; path?: [number, number, number][] };
+    await db.update(zones).set({ splatTransform: { flip: !!t.flip, yawDeg, scale, ...(prev.offset ? { offset: prev.offset } : {}), ...(prev.align ? { align: prev.align } : {}), ...(prev.path ? { path: prev.path } : {}) } }).where(eq(zones.id, zoneId));
     touch(spaceId);
   });
 }

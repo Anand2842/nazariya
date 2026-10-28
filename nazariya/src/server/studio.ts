@@ -328,7 +328,7 @@ export async function getTourZones(spaceId: string) {
       splatStatus: z.splatStatus,
       splatNote: z.splatNote,
       splatSource: z.splatSource,
-      splatTransform: z.splatTransform as { flip: boolean; yawDeg: number; scale: number; offset?: [number, number, number]; align?: [number, number, number, number] },
+      splatTransform: z.splatTransform as { flip: boolean; yawDeg: number; scale: number; offset?: [number, number, number]; align?: [number, number, number, number]; path?: [number, number, number][] },
       pano: pano ? { url: pano.full, mobileUrl: pano.mobile, thumb: pano.thumb, poster: pano.poster } : null,
       splat: splat ? { url: splat.desktop ?? splat.full, mobileUrl: splat.mobile ?? splat.desktop ?? splat.full, splats: (splat.meta?.splatsDesktop as number) ?? null, bytes: (splat.meta?.bytesDesktop as number) ?? null } : null,
       photos: z.photoAssetIds

@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Splat render check</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./three.module.js"}}</script>
+</head><body>
+<canvas id="c"></canvas>
+<script type="module">
+// Renders a splat PLY from COLMAP camera poses: window.renderView(R (row-major world→cam), t, fx, fy, cx, cy, w, h)
+import * as THREE from "three";
+import { SparkRenderer, SplatMesh, SplatFileType } from "./spark.module.js";
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color("#000");
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 200);
+scene.add(new SparkRenderer({ renderer }));
+const ply = new URLSearchParams(location.search).get("ply");
+const bytes = new Uint8Array(await (await fetch(ply)).arrayBuffer());
+const mesh = new SplatMesh({ fileBytes: bytes, fileType: SplatFileType.PLY });
+scene.add(mesh);
+await mesh.initialized;
+window.renderView = async (R, t, fx, fy, cx, cy, w, h) => {
+  renderer.setSize(w, h, false);
+  // COLMAP camera: x right, y down, z forward. three.js camera: x right, y up, looks down −z.
+  const Rt = new THREE.Matrix4().set(R[0], R[1], R[2], 0, R[3], R[4], R[5], 0, R[6], R[7], R[8], 0, 0, 0, 0, 1).transpose();
+  const C = new THREE.Vector3(...t).applyMatrix4(Rt).negate();
+  const flip = new THREE.Matrix4().makeScale(1, -1, -1);
+  const camToWorld = Rt.clone().multiply(flip).setPosition(C);
+  camera.matrixAutoUpdate = false;
+  camera.matrix.copy(camToWorld);
+  camera.matrixWorld.copy(camToWorld);
+  camera.matrixWorldInverse.copy(camToWorld).invert();
+  const near = 0.01, far = 200;
+  camera.projectionMatrix.set(
+    (2 * fx) / w, 0, 1 - (2 * cx) / w, 0,
+    0, (2 * fy) / h, (2 * cy) / h - 1, 0,
+    0, 0, -(far + near) / (far - near), (-2 * far * near) / (far - near),
+    0, 0, -1, 0);
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  for (let i = 0; i < 40; i++) {
+    renderer.render(scene, camera);
+    await new Promise((r) => requestAnimationFrame(r));
+  }
+  return canvas.toDataURL("image/jpeg", 0.85);
+};
+window.ready = true;
+</script></body></html>

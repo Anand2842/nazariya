@@ -76,10 +76,11 @@ export const MODE_GUIDES = {
   video: {
     title: "Walkthrough video",
     steps: [
-      "Start at the door and walk slowly: about half your normal pace",
-      "Keep the phone level at chest height; turn smoothly, never jerk",
-      "Cover every wall and corner once; finish where you started",
-      "30–90 seconds per room is ideal",
+      "Turn the fan off, switch every light on, and keep people out of the room",
+      "Hold the phone sideways at chest height, about 1 m from walls and furniture; walk at half your normal pace",
+      "Lap 1 along the walls with the phone pointing across the room, lap 2 through the middle pointing out at the walls",
+      "Follow the yellow hints: they appear when the phone points at the ceiling or floor, moves too fast, or sees only a plain wall",
+      "2–3 minutes per room; finish where you started",
     ],
   },
 } as const;

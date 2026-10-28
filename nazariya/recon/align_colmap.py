@@ -4,7 +4,8 @@ COLMAP's world has no "up" and no units. A person filming a room holds the phone
 so: up = mean of the cameras' up directions; the floor = the lowest dense layer of 3D points; the scale makes the
 camera height above the floor ≈ EYE_HEIGHT_M. The viewer starts where the phone actually was in the best-covered
 frame (the scene is sharpest from real camera positions), facing the same way. Writes the Nazariya scene
-transform {align: quaternion, scale, offset} and startYaw.
+transform {align: quaternion, scale, offset} and startYaw, plus path: every camera centre in walk order (the
+viewer keeps visitors near it, where the scene was actually seen).
 
 Usage: python3 align_colmap.py <colmap_txt_dir> <transform.json>
 """
@@ -102,8 +103,8 @@ def main(txt_dir, out):
     start = dict(centres)[best]
     fb = dict(fwds)[best]
     fv = [dot(M[r], fb) for r in range(3)]  # in viewer axes
-    start_yaw = math.atan2(-fv[0], -fv[2])  # three.js yaw: forward = (−sin y, 0, −cos y)
-    result = {"align": [round(x, 6) for x in q], "scale": round(scale, 6), "offset": [round(x, 6) for x in start], "startYaw": round(start_yaw, 4), "walkCentre": [round(x, 6) for x in mid], "startFrame": best}
+    start_yaw = math.atan2(fv[0], -fv[2])  # viewer yaw (SplatView: camera rotation −yaw): forward = (sin y, 0, −cos y)
+    result = {"align": [round(x, 6) for x in q], "scale": round(scale, 6), "offset": [round(x, 6) for x in start], "startYaw": round(start_yaw, 4), "walkCentre": [round(x, 6) for x in mid], "startFrame": best, "path": [[round(x, 4) for x in c] for c in cam]}
     json.dump(result, open(out, "w"))
     print(f"aligned: {len(cam)} cameras, {up_agree:.0%} held within 30° of upright; eye height {eye:.3f} units → scale {scale:.3f} m/unit; estimated room height {room_h:.2f} m")
 

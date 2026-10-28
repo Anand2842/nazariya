@@ -182,8 +182,10 @@ export async function processSplatImport(assetId: string) {
       await probe.parseHeader();
       desktop = mobile = bytes;
     } else {
-      desktop = (await spark.transcodeSpz({ inputs: [{ fileBytes: bytes, fileType, pathOrUrl: a.originalName ?? undefined }], maxSh: 1, opacityThreshold: 0.02 })).fileBytes;
-      mobile = (await spark.transcodeSpz({ inputs: [{ fileBytes: bytes, fileType, pathOrUrl: a.originalName ?? undefined }], maxSh: 0, opacityThreshold: 0.05 })).fileBytes;
+      // Keep all colour detail (SH degree 3): on a held-out-frame test (Oct 2026) degree 1 lost 3.9 dB PSNR and degree 0
+      // lost 4.9 dB, while dropping faint splats (opacity < 0.05) cost nothing and roughly halves the file.
+      desktop = (await spark.transcodeSpz({ inputs: [{ fileBytes: bytes, fileType, pathOrUrl: a.originalName ?? undefined }], maxSh: 3, opacityThreshold: 0.02 })).fileBytes;
+      mobile = (await spark.transcodeSpz({ inputs: [{ fileBytes: bytes, fileType, pathOrUrl: a.originalName ?? undefined }], maxSh: 3, opacityThreshold: 0.05 })).fileBytes;
     }
   } catch (e) {
     return reject(assetId, `Could not read this 3D scan: ${(e as Error).message.slice(0, 160)}`);
@@ -226,10 +228,10 @@ export async function runReconstruction(opts: { inputDir: string; zoneId: string
       .returning();
     await processSplatImport(imp.id);
     // Optional <outDir>/transform.json: upright alignment, metric scale and start point worked out by the worker.
-    const tf = await readFile(path.join(outDir, "transform.json"), "utf8").then((t) => JSON.parse(t) as { align?: number[]; scale?: number; offset?: number[]; startYaw?: number }).catch(() => null);
+    const tf = await readFile(path.join(outDir, "transform.json"), "utf8").then((t) => JSON.parse(t) as { align?: number[]; scale?: number; offset?: number[]; startYaw?: number; path?: number[][] }).catch(() => null);
     await db
       .update(zones)
-      .set({ splatSource: "reconstructed", ...(tf?.align?.length === 4 ? { splatTransform: { flip: false, yawDeg: 0, scale: tf.scale ?? 1, align: tf.align, ...(tf.offset?.length === 3 ? { offset: tf.offset } : {}) }, ...(Number.isFinite(tf.startYaw) ? { startYaw: tf.startYaw } : {}) } : {}) })
+      .set({ splatSource: "reconstructed", ...(tf?.align?.length === 4 ? { splatTransform: { flip: false, yawDeg: 0, scale: tf.scale ?? 1, align: tf.align, ...(tf.offset?.length === 3 ? { offset: tf.offset } : {}), ...(tf.path?.length ? { path: tf.path } : {}) }, ...(Number.isFinite(tf.startYaw) ? { startYaw: tf.startYaw } : {}) } : {}) })
       .where(eq(zones.id, opts.zoneId));
     return "done";
   } catch (e) {
@@ -259,7 +261,8 @@ export async function processVideo(assetId: string) {
   if (duration > 300) return reject(assetId, "Walkthrough is too long: keep each room under 5 minutes");
   const tmp = await mkdtemp(path.join(tmpdir(), "nz-frames-"));
   try {
-    await run("ffmpeg", ["-v", "error", "-i", file, "-vf", "fps=2,scale=1280:-2", "-q:v", "3", path.join(tmp, "f%04d.jpg")]);
+    // Long side ≤ 1600 px whatever the orientation (a fixed width of 1280 upscaled portrait phone videos).
+    await run("ffmpeg", ["-v", "error", "-i", file, "-vf", "fps=2,scale='if(gte(iw,ih),min(1600,iw),-2)':'if(gte(iw,ih),-2,min(1600,ih))'", "-q:v", "3", path.join(tmp, "f%04d.jpg")]);
     const frames = (await readdir(tmp)).filter((f) => f.endsWith(".jpg")).sort();
     const scored: { f: string; blur: number }[] = [];
     for (const f of frames) scored.push({ f, blur: await blurScore(await readFile(path.join(tmp, f))) });

@@ -22,7 +22,7 @@ export interface ViewerZone {
   splatNote: string | null;
   splatSource?: string | null;
   // align: rotation (quaternion x, y, z, w) that makes a reconstructed scan upright, applied before flip/yaw.
-  splatTransform?: { flip: boolean; yawDeg: number; scale: number; offset?: [number, number, number]; align?: [number, number, number, number] } | null;
+  splatTransform?: { flip: boolean; yawDeg: number; scale: number; offset?: [number, number, number]; align?: [number, number, number, number]; path?: [number, number, number][] } | null;
   pano: { url: string | null; mobileUrl: string | null; thumb: string | null; poster: string | null } | null;
   splat: { url: string | null; mobileUrl: string | null; splats: number | null; bytes: number | null } | null;
   photos: { id: string; url: string; thumb: string }[];

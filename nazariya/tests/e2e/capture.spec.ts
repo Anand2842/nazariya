@@ -101,9 +101,10 @@ test("guided walkthrough video records in the browser and uploads", async ({ pag
   await page.getByTestId("record").click();
   await expect(page.getByTestId("video-timer")).toContainText("●");
   await page.waitForTimeout(11_500);
-  await expect(page.getByTestId("video-tip")).toContainText(/Pan slowly|corner/);
+  await expect(page.getByTestId("video-tip")).toContainText("Lap 1");
   await page.getByTestId("record").click();
   await expect(page.getByTestId("video-preview")).toBeVisible();
+  await expect(page.getByTestId("video-framed")).toContainText("Well filmed");
   await page.getByTestId("video-upload").click();
   await expect(page.getByTestId("capture-done")).toContainText("Walkthrough");
 });

@@ -14,15 +14,17 @@ OUT="$2"
 BRUSH="${BRUSH_BIN:-$HOME/Downloads/rea/tools/brush/brush-app-aarch64-apple-darwin/brush_app}"
 STEPS="${RECON_ITERS:-6000}"
 MIN_POINTS="${RECON_MIN_FRAME_POINTS:-100}"
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/nz-recon.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 if [ -f "$IN/transforms.json" ]; then
   DATA="$IN"
 else
   mkdir -p "$WORK/images" "$WORK/sparse"
-  FIRST="$(ls "$IN"/*.jpg | head -1)"
-  read -r FW FH < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=' ' "$FIRST")
+  # A glob, not `ls | head`: with pipefail, head closing the pipe early kills the script (SIGPIPE).
+  FRAMES=("$IN"/*.jpg)
+  FIRST="${FRAMES[0]}"
+  IFS=, read -r FW FH < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$FIRST")
   if [ "$FW" -eq $((FH * 2)) ]; then
     # 360° camera (equirectangular frames): cut every frame into 12 fixed views and treat them as one camera rig
     # whose relative rotations are exact, so COLMAP solves one pose per moment and every wall is seen each time.
@@ -48,7 +50,12 @@ else
       || colmap mapper --database_path "$WORK/db.db" --image_path "$WORK/images" --output_path "$WORK/sparse"
   fi
   # Largest reconstruction → pinhole images that any splat trainer reads.
-  MODEL="$(ls -d "$WORK"/sparse/*/ | head -1)"
+  # The mapper can split a walk into several models, and the largest is not always listed first.
+  MODEL="" BEST=0
+  for M in "$WORK"/sparse/*/; do
+    N=$(colmap model_analyzer --path "$M" 2>&1 | awk '/Registered images/ {print $NF}')
+    if [ "${N:-0}" -gt "$BEST" ]; then MODEL="$M" BEST="$N"; fi
+  done
   colmap image_undistorter --image_path "$WORK/images" --input_path "$MODEL" --output_path "$WORK/undist" --output_type COLMAP
   mkdir -p "$WORK/undist/sparse/0" && mv "$WORK"/undist/sparse/*.bin "$WORK/undist/sparse/0/" 2>/dev/null || true
   REGISTERED=$(colmap model_analyzer --path "$WORK/undist/sparse/0" 2>&1 | awk '/Registered images/ {print $NF}')
@@ -65,6 +72,14 @@ else
   mkdir -p "$WORK/clean_txt" && colmap model_converter --input_path "$WORK/clean/sparse/0" --output_path "$WORK/clean_txt" --output_type TXT
   python3 "$(dirname "$0")/align_colmap.py" "$WORK/clean_txt" "$OUT/transform.json" || true
   DATA="$WORK/clean"
+  # Poses only (kaggle.sh trains elsewhere): hand over images/ + sparse/0 and stop before training.
+  if [ -n "${RECON_POSES_ONLY:-}" ]; then
+    mkdir -p "$RECON_POSES_ONLY/sparse"
+    cp -RL "$DATA/images" "$RECON_POSES_ONLY/images"
+    cp -R "$DATA/sparse/0" "$RECON_POSES_ONLY/sparse/0"
+    echo "poses written to $RECON_POSES_ONLY"
+    exit 0
+  fi
 fi
 
 # 960 px and ≤1.5M splats: trains in reasonable time on a Mac and streams well in the web viewer.
